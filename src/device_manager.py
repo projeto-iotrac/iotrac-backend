@@ -4,9 +4,9 @@
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, IPvAnyAddress
-from typing import Annotated
-from typing import List
+from typing import Annotated, List
 from pydantic.types import StringConstraints
+from ipaddress import ip_address
 import sqlite3
 
 # Inicializa o app FastAPI
@@ -15,7 +15,15 @@ app = FastAPI(title="IoT Protection App")
 # Define o modelo de dados para registro de dispositivo
 class DeviceRegister(BaseModel):
     device_type: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]  # Ex: drone, vehicle, lamp
-    ip_address: IPvAnyAddress
+    ip_address: str  # Aceita como string
+
+    def __init__(self, **data):
+        super().__init__(**data)
+        # Converte para IPvAnyAddress para validação
+        try:
+            self.ip_address = str(ip_address(self.ip_address))  # Garante IP válido e retorna como string
+        except ValueError as e:
+            raise ValueError(f"Endereço IP inválido: {e}")
 
 # Define o modelo de resposta para listagem de dispositivos
 class DeviceOut(BaseModel):
@@ -39,6 +47,7 @@ def init_db():
 
 # Inicializa o banco ao iniciar o app
 init_db()
+
 # Endpoint para registrar um novo dispositivo IoT
 @app.post("/device/register", response_model=DeviceOut)
 def register_device(device: DeviceRegister):
@@ -48,7 +57,7 @@ def register_device(device: DeviceRegister):
         # Insere o dispositivo na tabela
         cursor.execute(
             "INSERT INTO devices (device_type, ip_address) VALUES (?, ?)",
-            (device.device_type, str(device.ip_address))
+            (device.device_type, device.ip_address)  # ip_address já é string
         )
         conn.commit()
         device_id = cursor.lastrowid
@@ -57,7 +66,8 @@ def register_device(device: DeviceRegister):
         raise HTTPException(status_code=400, detail="IP address already registered")
     conn.close()
     # Retorna os dados do dispositivo registrado
-    return DeviceOut(id=device_id, device_type=device.device_type, ip_address=str(device.ip_address))
+    return DeviceOut(id=device_id, device_type=device.device_type, ip_address=device.ip_address)
+
 # Endpoint para listar todos os dispositivos registrados
 @app.get("/devices", response_model=List[DeviceOut])
 def list_devices():
