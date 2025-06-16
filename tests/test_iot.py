@@ -3,6 +3,8 @@ from fastapi.testclient import TestClient
 from unittest.mock import Mock, patch
 import sys
 import os
+import sqlite3
+import uuid
 
 # Adiciona o diretório raiz ao PYTHONPATH
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -19,13 +21,28 @@ except ImportError:
 
 client = TestClient(app)
 
+def clear_database():
+    """Limpa o banco de dados antes de cada teste"""
+    conn = sqlite3.connect('devices.db')
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM devices")
+    conn.commit()
+    conn.close()
+
+@pytest.fixture(autouse=True)
+def setup_database():
+    """Fixture para limpar o banco de dados antes de cada teste"""
+    clear_database()
+    yield
+    clear_database()
+
 # Testes de Vinculação de Dispositivos
 class TestDeviceRegistration:
     def test_register_device_success(self):
         # Teste com dados válidos
         test_device = {
             "device_type": "sensor_temperature",
-            "ip_address": "192.168.1.100"
+            "ip_address": f"192.168.1.{uuid.uuid4().int % 255}"  # IP único
         }
         response = client.post("/device/register", json=test_device)
         print(f"Response status: {response.status_code}")
@@ -34,7 +51,7 @@ class TestDeviceRegistration:
         data = response.json()
         assert "id" in data
         assert data["device_type"] == "sensor_temperature"
-        assert data["ip_address"] == "192.168.1.100"
+        assert data["ip_address"] == test_device["ip_address"]
 
     def test_register_device_invalid_input(self):
         # Teste com dados inválidos
@@ -63,9 +80,10 @@ class TestAPIEndpoints:
 
     def test_register_device_endpoint_duplicate_ip(self):
         # Primeiro registro
+        test_ip = f"192.168.1.{uuid.uuid4().int % 255}"  # IP único
         test_device = {
             "device_type": "sensor_temperature",
-            "ip_address": "192.168.1.101"
+            "ip_address": test_ip
         }
         response = client.post("/device/register", json=test_device)
         assert response.status_code == 200
