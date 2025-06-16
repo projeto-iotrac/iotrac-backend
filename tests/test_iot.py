@@ -23,11 +23,13 @@ client = TestClient(app)
 class TestDeviceRegistration:
     def test_register_device_success(self):
         # Teste com dados válidos
-        test_device = DeviceRegister(
-            device_type="sensor_temperature",
-            ip_address="192.168.1.100"
-        )
-        response = client.post("/device/register", json=test_device.model_dump())
+        test_device = {
+            "device_type": "sensor_temperature",
+            "ip_address": "192.168.1.100"
+        }
+        response = client.post("/device/register", json=test_device)
+        print(f"Response status: {response.status_code}")
+        print(f"Response body: {response.json()}")
         assert response.status_code == 200
         data = response.json()
         assert "id" in data
@@ -61,14 +63,15 @@ class TestAPIEndpoints:
 
     def test_register_device_endpoint_duplicate_ip(self):
         # Primeiro registro
-        test_device = DeviceRegister(
-            device_type="sensor_temperature",
-            ip_address="192.168.1.101"
-        )
-        client.post("/device/register", json=test_device.model_dump())
+        test_device = {
+            "device_type": "sensor_temperature",
+            "ip_address": "192.168.1.101"
+        }
+        response = client.post("/device/register", json=test_device)
+        assert response.status_code == 200
         
         # Tentativa de registro com mesmo IP
-        response = client.post("/device/register", json=test_device.model_dump())
+        response = client.post("/device/register", json=test_device)
         assert response.status_code == 400
         assert "IP address already registered" in response.json()["detail"]
 

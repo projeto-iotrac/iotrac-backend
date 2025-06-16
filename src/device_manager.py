@@ -3,10 +3,10 @@
 # Bibliotecas: fastapi, sqlite3, pydantic
 
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, IPvAnyAddress
+from pydantic import BaseModel, ValidationError
 from typing import Annotated, List
 from pydantic.types import StringConstraints
-from ipaddress import ip_address
+from ipaddress import ip_address, AddressValueError
 import sqlite3
 
 # Inicializa o app FastAPI
@@ -18,12 +18,12 @@ class DeviceRegister(BaseModel):
     ip_address: str  # Aceita como string
 
     def __init__(self, **data):
-        super().__init__(**data)
-        # Converte para IPvAnyAddress para validação
         try:
-            self.ip_address = str(ip_address(self.ip_address))  # Garante IP válido e retorna como string
-        except ValueError as e:
-            raise ValueError(f"Endereço IP inválido: {e}")
+            # Valida e converte ip_address para garantir que é um IP válido
+            ip_address(data.get("ip_address"))
+            super().__init__(**data)
+        except AddressValueError:
+            raise ValueError("Formato de endereço IP inválido")
 
 # Define o modelo de resposta para listagem de dispositivos
 class DeviceOut(BaseModel):
@@ -64,6 +64,9 @@ def register_device(device: DeviceRegister):
     except sqlite3.IntegrityError:
         conn.close()
         raise HTTPException(status_code=400, detail="IP address already registered")
+    except Exception as e:
+        conn.close()
+        raise HTTPException(status_code=400, detail=str(e))
     conn.close()
     # Retorna os dados do dispositivo registrado
     return DeviceOut(id=device_id, device_type=device.device_type, ip_address=device.ip_address)
