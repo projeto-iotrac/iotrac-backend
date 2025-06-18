@@ -1,11 +1,14 @@
-fastapi>=0.68.0
-uvicorn>=0.15.0
-pytest>=7.0.0
-pytest-asyncio>=0.18.0
-pytest-capturelog>=1.2.2
-httpx>=0.23.0
-cryptography>=3.4.7
-python-jose[cryptography]>=3.3.0
-pydantic>=1.8.0
-python-dotenv>=0.19.0
-pyjwt>=2.0.0
+fastapi
+uvicorn
+pytest
+pytest-asyncio
+httpx
+cryptography
+python-jose[cryptography]
+pydantic
+python-dotenv
+pyjwt
+
+# Dependências universais para ambiente moderno.
+# Recomenda-se usar 'pip install -r requirements.txt' para baixar as versões mais recentes compatíveis.
+# Se necessário, ajuste versões conforme seu ambiente (ex: python 3.8+).
