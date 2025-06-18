@@ -5,3 +5,6 @@ pytest-asyncio>=0.18.0
 httpx>=0.23.0
 cryptography>=3.4.7
 python-jose[cryptography]>=3.3.0
+pydantic>=1.8.0
+python-dotenv>=0.19.0
+pyjwt>=2.0.0
