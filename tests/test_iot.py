@@ -379,6 +379,54 @@ class TestDeviceInterceptor:
         # Verifica se a conexão foi fechada
         mock_sock.close.assert_called_once()
 
+    def test_send_udp_ip_invalido(self):
+        with pytest.raises(ValueError, match="Endereço IP inválido"):
+            send_udp("256.256.256.256", 5000, "msg")
+
+    def test_send_tcp_ip_invalido(self):
+        with pytest.raises(ValueError, match="Endereço IP inválido"):
+            send_tcp("abc.def.ghi.jkl", 5001, "msg")
+
+    def test_send_udp_porta_invalida(self):
+        with pytest.raises(ValueError, match="Porta inválida"):
+            send_udp("192.168.1.100", 70000, "msg")
+
+    def test_send_tcp_porta_invalida(self):
+        with pytest.raises(ValueError, match="Porta inválida"):
+            send_tcp("192.168.1.100", 0, "msg")
+
+    def test_send_udp_mensagem_vazia(self):
+        with pytest.raises(ValueError, match="Mensagem não pode ser vazia"):
+            send_udp("192.168.1.100", 5000, "   ")
+
+    def test_send_tcp_mensagem_vazia(self):
+        with pytest.raises(ValueError, match="Mensagem não pode ser vazia"):
+            send_tcp("192.168.1.100", 5001, "")
+
+    @patch('socket.socket')
+    def test_send_udp_timeout(self, mock_socket):
+        mock_sock = Mock()
+        mock_socket.return_value = mock_sock
+        mock_sock.sendto.side_effect = socket.timeout
+        with pytest.raises(RuntimeError, match="Timeout ao enviar UDP"):
+            send_udp("192.168.1.100", 5000, "msg", timeout=0.01)
+
+    @patch('socket.socket')
+    def test_send_tcp_timeout(self, mock_socket):
+        mock_sock = Mock()
+        mock_socket.return_value = mock_sock
+        mock_sock.connect.side_effect = socket.timeout
+        with pytest.raises(RuntimeError, match="Timeout ao conectar/enviar"):
+            send_tcp("192.168.1.100", 5001, "msg", timeout=0.01)
+
+    @patch('socket.socket')
+    def test_send_tcp_conexao_recusada(self, mock_socket):
+        mock_sock = Mock()
+        mock_socket.return_value = mock_sock
+        mock_sock.connect.side_effect = ConnectionRefusedError
+        with pytest.raises(RuntimeError, match="Conexão recusada"):
+            send_tcp("192.168.1.100", 5001, "msg")
+
 # ============================================================================
 # TESTES DE INTEGRAÇÃO
 # ============================================================================
