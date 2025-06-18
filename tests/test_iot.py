@@ -197,6 +197,59 @@ class TestDatabaseManager:
             if os.path.exists(db_path):
                 os.remove(db_path)
 
+    def test_insert_device_valida_campos_obrigatorios(self):
+        with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as tmp_db:
+            db_path = tmp_db.name
+        db_manager = DatabaseManager(db_path)
+        try:
+            with pytest.raises(ValueError):
+                db_manager.insert_device("", "192.168.1.100")
+        finally:
+            if os.path.exists(db_path):
+                os.remove(db_path)
+
+    def test_insert_log_valida_command_vazio(self):
+        with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as tmp_db:
+            db_path = tmp_db.name
+        db_manager = DatabaseManager(db_path)
+        try:
+            device_id = db_manager.insert_device("drone", "192.168.1.101")
+            with pytest.raises(ValueError):
+                db_manager.insert_log(device_id, "", "success")
+        finally:
+            if os.path.exists(db_path):
+                os.remove(db_path)
+
+    def test_insert_log_valida_status_invalido(self):
+        with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as tmp_db:
+            db_path = tmp_db.name
+        db_manager = DatabaseManager(db_path)
+        try:
+            device_id = db_manager.insert_device("drone", "192.168.1.102")
+            with pytest.raises(ValueError):
+                db_manager.insert_log(device_id, "move_up", "invalid_status")
+        finally:
+            if os.path.exists(db_path):
+                os.remove(db_path)
+
+    def test_indices_criados(self):
+        with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as tmp_db:
+            db_path = tmp_db.name
+        db_manager = DatabaseManager(db_path)
+        try:
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_device_logs_device_id'")
+            idx1 = cursor.fetchone()
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_device_logs_timestamp'")
+            idx2 = cursor.fetchone()
+            conn.close()
+            assert idx1 is not None
+            assert idx2 is not None
+        finally:
+            if os.path.exists(db_path):
+                os.remove(db_path)
+
 class TestAPIEndpoints:
     """Testes para endpoints da API da Camada 3"""
     
