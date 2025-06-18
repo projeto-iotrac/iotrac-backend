@@ -16,17 +16,6 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.device_manager import register_device, DeviceRegister, app
 
-# Tratamento de erro para importação das funções de criptografia
-try:
-    from src.crypto_utils import encrypt_aes256, verify_hmac, AESCipher, JWTAuth, generate_hmac
-except ImportError:
-    print("Aviso: Funções de criptografia não encontradas, usando mocks")
-    encrypt_aes256 = lambda x, y: b"mocked_encrypted"
-    verify_hmac = lambda x, y, z: True
-    AESCipher = Mock()
-    JWTAuth = Mock()
-    generate_hmac = lambda x, y: "mocked_hmac"
-
 # Importações da Camada 3
 try:
     from src.db_setup import DatabaseManager, db_manager
@@ -53,67 +42,6 @@ def setup_database():
     clear_database()
     yield
     clear_database()
-
-# ============================================================================
-# TESTES DA CAMADA 1: CRYPTO UTILS
-# ============================================================================
-
-class TestCryptoUtils:
-    """Testes para as funcionalidades de criptografia da Camada 1"""
-    
-    def test_aes256_encryption(self):
-        """Teste de criptografia AES-256"""
-        test_data = "dados_sensíveis"
-        key = "chave_secreta_32_bytes_123456789"
-        encrypted = encrypt_aes256(test_data, key)
-        assert encrypted is not None
-        assert isinstance(encrypted, bytes)
-        assert len(encrypted) > len(test_data)  # Deve incluir IV
-
-    def test_hmac_verification(self):
-        """Teste de verificação HMAC-SHA256"""
-        test_data = "dados_para_verificar"
-        key = "chave_hmac_secreta"
-        hmac = b"hmac_calculado"
-        assert verify_hmac(test_data, hmac, key) in [True, False]
-
-    @patch('src.crypto_utils.AESCipher')
-    def test_aes_cipher_encryption(self, mock_aes_cipher):
-        """Teste da classe AESCipher"""
-        mock_cipher = Mock()
-        mock_cipher.encrypt.return_value = (b'iv', b'ciphertext', 'hmac_hex')
-        mock_aes_cipher.return_value = mock_cipher
-        
-        cipher = AESCipher(b'key', b'hmac_key')
-        iv, ct, mac = cipher.encrypt(b'test_data')
-        
-        assert iv == b'iv'
-        assert ct == b'ciphertext'
-        assert mac == 'hmac_hex'
-
-    @patch('src.crypto_utils.JWTAuth')
-    def test_jwt_auth(self, mock_jwt_auth):
-        """Teste da classe JWTAuth"""
-        mock_auth = Mock()
-        mock_auth.generate_token.return_value = "test_token"
-        mock_auth.verify_token.return_value = {"user": "test"}
-        mock_jwt_auth.return_value = mock_auth
-        
-        auth = JWTAuth()
-        token = auth.generate_token({"user": "test"})
-        payload = auth.verify_token(token)
-        
-        assert token == "test_token"
-        assert payload["user"] == "test"
-
-    def test_generate_hmac(self):
-        """Teste da função generate_hmac"""
-        key = b"test_key_32_bytes_long_key_here"
-        message = b"test_message"
-        hmac_result = generate_hmac(key, message)
-        
-        assert isinstance(hmac_result, str)
-        assert len(hmac_result) > 0
 
 # ============================================================================
 # TESTES DA CAMADA 2: DEVICE MANAGER
@@ -428,13 +356,11 @@ class TestIntegration:
             test_key = b"test_key_32_bytes_long_key_here"
             test_hmac_key = b"test_hmac_key_32_bytes_long"
             cipher = AESCipher(test_key, test_hmac_key)
-            
             test_data = b"test_command"
             iv, ct, mac = cipher.encrypt(test_data)
-            
-            assert iv is not None
-            assert ct is not None
-            assert mac is not None
+            # Extensão: descriptografia e validação de HMAC
+            result = cipher.decrypt(iv, ct, mac)
+            assert result == test_data
 
     def test_error_handling(self):
         """Teste de tratamento de erros"""
@@ -557,7 +483,7 @@ def pytest_configure(config):
     """Configuração do pytest"""
     print("\n🚀 Configurando testes do IOTRAC...")
     print("📋 Testes disponíveis:")
-    print("  - Camada 1: Crypto Utils")
+    print("  - Camada 1: Crypto Utils (em tests/test_crypto_utils.py)")
     print("  - Camada 2: Device Manager")
     print("  - Camada 3: API Central")
     print("  - Camada 4: Device Interceptor")
