@@ -18,15 +18,13 @@ from dotenv import load_dotenv
 from db_setup import db_manager, DatabaseManager
 from device_interceptor import send_udp, send_tcp
 from crypto_utils import AESCipher, JWTAuth, generate_hmac, verify_hmac
+from src.config import setup_logging
 
 # Carrega variáveis de ambiente
 load_dotenv()
 
-# Configuração de logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+# Logging centralizado
+setup_logging()
 logger = logging.getLogger(__name__)
 
 # Configurações do servidor
@@ -34,8 +32,14 @@ SERVER_PORT = int(os.getenv("SERVER_PORT", "8000"))
 SERVER_HOST = os.getenv("SERVER_HOST", "0.0.0.0")
 
 # Configurações de segurança
-AES_KEY = os.getenv("AES_KEY", "default_aes_key_32_bytes_long_key")
-HMAC_KEY = os.getenv("HMAC_KEY", "default_hmac_key_32_bytes_long_key")
+AES_KEY = os.getenv("AES_KEY")
+HMAC_KEY = os.getenv("HMAC_KEY")
+
+# Validação das chaves de segurança
+if not AES_KEY or len(AES_KEY.encode()) < 32:
+    raise RuntimeError("AES_KEY não definida ou menor que 32 bytes. Defina uma chave segura no .env.")
+if not HMAC_KEY or len(HMAC_KEY.encode()) < 32:
+    raise RuntimeError("HMAC_KEY não definida ou menor que 32 bytes. Defina uma chave segura no .env.")
 
 # Inicialização do FastAPI
 app = FastAPI(
@@ -50,12 +54,11 @@ try:
         AES_KEY.encode()[:32].ljust(32, b'0'),
         HMAC_KEY.encode()[:32].ljust(32, b'0')
     )
-    jwt_auth = JWTAuth()
+    # JWTAuth não utilizado nesta versão. Futuramente será implementado para autenticação JWT.
     logger.info("Componentes de segurança inicializados com sucesso")
 except Exception as e:
     logger.error(f"Erro ao inicializar componentes de segurança: {e}")
     aes_cipher = None
-    jwt_auth = None
 
 # Modelos Pydantic para validação de dados
 
@@ -133,8 +136,8 @@ def encrypt_command(command: str) -> Dict[str, str]:
             "hmac": hmac_hex
         }
     except Exception as e:
-        logger.error(f"Erro ao criptografar comando: {e}")
-        raise HTTPException(status_code=500, detail="Erro ao criptografar comando")
+        logger.error(f"Falha na criptografia do comando: {e}")
+        raise HTTPException(status_code=500, detail=f"Falha na criptografia do comando: {e}")
 
 def send_command_to_device(device: Dict[str, Any], command: str, protection_enabled: bool) -> str:
     """
@@ -148,6 +151,10 @@ def send_command_to_device(device: Dict[str, Any], command: str, protection_enab
     Returns:
         str: Status do envio ("success", "blocked", "error")
     """
+    # Validação dos campos obrigatórios
+    if not isinstance(device, dict) or "device_type" not in device or "ip_address" not in device:
+        logger.error(f"Dados do dispositivo incompletos: {device}")
+        raise ValueError("Dados do dispositivo incompletos")
     try:
         device_type = device["device_type"]
         ip_address = device["ip_address"]
@@ -157,7 +164,6 @@ def send_command_to_device(device: Dict[str, Any], command: str, protection_enab
             port = 5000  # Porta UDP para drones
             message = command
             if protection_enabled:
-                # Aplica criptografia se proteção estiver ativa
                 encrypted_data = encrypt_command(command)
                 message = json.dumps(encrypted_data)
             
@@ -169,7 +175,6 @@ def send_command_to_device(device: Dict[str, Any], command: str, protection_enab
             port = 5001  # Porta TCP para veículos
             message = command
             if protection_enabled:
-                # Aplica criptografia se proteção estiver ativa
                 encrypted_data = encrypt_command(command)
                 message = json.dumps(encrypted_data)
             
@@ -189,9 +194,12 @@ def send_command_to_device(device: Dict[str, Any], command: str, protection_enab
             logger.info(f"Comando enviado para {device_type} {ip_address}: {command}")
             return "success"
             
+    except ValueError as ve:
+        logger.error(f"Erro de validação ao enviar comando: {ve}")
+        raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
         logger.error(f"Erro ao enviar comando para dispositivo {device.get('id')}: {e}")
-        return "error"
+        raise HTTPException(status_code=503, detail=f"Falha ao enviar comando para o dispositivo: {e}")
 
 # Endpoints da API
 
@@ -261,7 +269,7 @@ async def get_logs(
     """
     try:
         if limit <= 0 or limit > 1000:
-            raise HTTPException(status_code=400, detail="Limit deve estar entre 1 e 1000")
+            raise HTTPException(status_code=400, detail=f"Limit inválido: {limit}. Deve estar entre 1 e 1000")
         
         logs = db.get_logs(limit)
         return [LogEntry(**log) for log in logs]
@@ -417,11 +425,13 @@ if __name__ == "__main__":
     logger.info("  GET  /logs - Logs de comandos")
     logger.info("  POST /command - Enviar comando")
     logger.info("  GET  /devices - Listar dispositivos")
+    logger.info("  GET  /devices/{device_id} - Detalhes do dispositivo")
     
     uvicorn.run(
         "main:app",
         host=SERVER_HOST,
         port=SERVER_PORT,
         reload=True,
-        log_level="info"
+        log_level="info",
+        timeout_keep_alive=10
     )

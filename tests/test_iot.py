@@ -259,84 +259,82 @@ class TestAPIEndpoints:
         assert response.status_code == 200
         assert isinstance(response.json(), list)
 
-    def test_register_device_endpoint_duplicate_ip(self):
-        """Teste de registro duplicado de IP"""
-        # Primeiro registro
-        test_ip = f"192.168.1.{uuid.uuid4().int % 255}"  # IP único
-        test_device = {
-            "device_type": "sensor_temperature",
-            "ip_address": test_ip
-        }
-        response = client.post("/device/register", json=test_device)
+    def test_get_device_by_id(self):
+        """Teste do endpoint GET /devices/{device_id} (sucesso e 404)"""
+        # Registra um dispositivo
+        test_device = {"device_type": "drone", "ip_address": f"192.168.1.{uuid.uuid4().int % 255}"}
+        resp = client.post("/device/register", json=test_device)
+        assert resp.status_code == 200
+        device_id = resp.json()["id"]
+        # Busca o dispositivo existente
+        response = client.get(f"/devices/{device_id}")
         assert response.status_code == 200
-        
-        # Tentativa de registro com mesmo IP
-        response = client.post("/device/register", json=test_device)
+        assert response.json()["id"] == device_id
+        # Busca um dispositivo inexistente
+        response = client.get("/devices/999999")
+        assert response.status_code == 404
+        assert "não encontrado" in response.json()["detail"]
+
+    def test_get_status_and_toggle_protection(self):
+        """Testa GET /status e POST /toggle_protection sem mocks, usando banco real"""
+        # Status inicial
+        response = client.get("/status")
+        assert response.status_code == 200
+        assert "protection_enabled" in response.json()
+        # Alterna proteção
+        response2 = client.post("/toggle_protection")
+        assert response2.status_code == 200
+        assert "protection_enabled" in response2.json()
+        assert "message" in response2.json()
+
+    def test_logs_limit_validation(self):
+        """Testa mensagem de erro detalhada para limit inválido em /logs"""
+        response = client.get("/logs?limit=0")
         assert response.status_code == 400
-        assert "IP address already registered" in response.json()["detail"]
+        assert "Limit inválido" in response.json()["detail"]
+        response = client.get("/logs?limit=2000")
+        assert response.status_code == 400
+        assert "Limit inválido" in response.json()["detail"]
 
-    @patch('src.main.db_manager')
-    def test_protection_status_endpoint(self, mock_db_manager):
-        """Teste do endpoint de status de proteção"""
-        mock_db_manager.get_protection_status.return_value = True
-        
-        # Mock do app FastAPI da Camada 3
-        with patch('src.main.app') as mock_app:
-            mock_app.get.return_value = lambda: {"protection_enabled": True, "timestamp": "2024-01-15T10:30:00"}
-            
-            # Simula a resposta do endpoint
-            response_data = {"protection_enabled": True, "timestamp": "2024-01-15T10:30:00"}
-            
-            assert response_data["protection_enabled"] is True
-            assert "timestamp" in response_data
+    def test_command_erro_criptografia(self, monkeypatch):
+        """Testa POST /command com falha de criptografia (mock aes_cipher.encrypt)"""
+        # Registra dispositivo
+        test_device = {"device_type": "drone", "ip_address": f"192.168.1.{uuid.uuid4().int % 255}"}
+        resp = client.post("/device/register", json=test_device)
+        assert resp.status_code == 200
+        device_id = resp.json()["id"]
+        # Mocka aes_cipher.encrypt para lançar exceção
+        from src import main as main_module
+        monkeypatch.setattr(main_module.aes_cipher, "encrypt", lambda *_: (_ for _ in ()).throw(Exception("erro fake")))
+        # Envia comando protegido
+        payload = {"device_id": device_id, "command": "move_up"}
+        response = client.post("/command", json=payload)
+        assert response.status_code == 500
+        assert "Falha na criptografia do comando" in response.json()["detail"]
 
-    @patch('src.main.db_manager')
-    def test_toggle_protection_endpoint(self, mock_db_manager):
-        """Teste do endpoint de alternância de proteção"""
-        mock_db_manager.toggle_protection.return_value = False
-        
-        # Simula a resposta do endpoint
-        response_data = {
-            "protection_enabled": False,
-            "message": "Proteção desativada com sucesso",
-            "timestamp": "2024-01-15T10:30:00"
-        }
-        
-        assert response_data["protection_enabled"] is False
-        assert "desativada" in response_data["message"]
+    def test_command_device_incompleto(self):
+        """Testa POST /command para device incompleto (simula device sem campos obrigatórios)"""
+        # Simula banco retornando device incompleto
+        with patch("src.main.db_manager.get_device", return_value={"id": 1}):
+            payload = {"device_id": 1, "command": "move_up"}
+            response = client.post("/command", json=payload)
+            assert response.status_code == 400
+            assert "Dados do dispositivo incompletos" in response.json()["detail"]
 
-    @patch('src.main.db_manager')
-    def test_command_endpoint(self, mock_db_manager):
-        """Teste do endpoint de comandos"""
-        # Mock do dispositivo
-        mock_device = {
-            "id": 1,
-            "device_type": "drone",
-            "ip_address": "192.168.1.100"
-        }
-        mock_db_manager.get_device.return_value = mock_device
-        mock_db_manager.get_protection_status.return_value = True
-        mock_db_manager.insert_log.return_value = 1
-        
-        # Simula o comando
-        command_data = {
-            "device_id": 1,
-            "command": "move_up"
-        }
-        
-        # Simula a resposta do endpoint
-        response_data = {
-            "success": True,
-            "message": "Comando 'move_up' enviado para drone com proteção ativa",
-            "device_id": 1,
-            "command": "move_up",
-            "timestamp": "2024-01-15T10:30:00",
-            "protection_enabled": True
-        }
-        
-        assert response_data["success"] is True
-        assert response_data["device_id"] == command_data["device_id"]
-        assert response_data["command"] == command_data["command"]
+    def test_command_envio_falha(self, monkeypatch):
+        """Testa POST /command com falha de envio (mock send_udp para lançar exceção)"""
+        # Registra dispositivo
+        test_device = {"device_type": "drone", "ip_address": f"192.168.1.{uuid.uuid4().int % 255}"}
+        resp = client.post("/device/register", json=test_device)
+        assert resp.status_code == 200
+        device_id = resp.json()["id"]
+        # Mocka send_udp para lançar exceção
+        from src import main as main_module
+        monkeypatch.setattr(main_module, "send_udp", lambda *_: (_ for _ in ()).throw(Exception("erro fake envio")))
+        payload = {"device_id": device_id, "command": "move_up"}
+        response = client.post("/command", json=payload)
+        assert response.status_code == 503
+        assert "Falha ao enviar comando" in response.json()["detail"]
 
 # ============================================================================
 # TESTES DA CAMADA 4: DEVICE INTERCEPTOR
