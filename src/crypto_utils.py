@@ -4,11 +4,12 @@
 # Variáveis de ambiente necessárias: AES_KEY, HMAC_KEY, JWT_SECRET
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from cryptography.hazmat.primitives import hashes, hmac, padding
+from cryptography.hazmat.primitives import hashes, hmac as crypto_hmac, padding
 from cryptography.hazmat.backends import default_backend
 import os
 import logging
-from datetime import datetime, timedelta
+import hmac  # Importação do módulo hmac built-in para compare_digest
+from datetime import datetime, timedelta, timezone  # Adicionar timezone
 from typing import Tuple, Optional, Dict, Any
 from cryptography.exceptions import InvalidSignature
 from dotenv import load_dotenv
@@ -104,7 +105,7 @@ class AESCipher:
         KeyValidator.validate_hmac_key(hmac_key)
         self.key = key
         self.hmac_key = hmac_key
-        self.created_at = datetime.utcnow()
+        self.created_at = datetime.now(timezone.utc)  # Corrigido: usar timezone.utc
         self._backend = BACKEND
         # Template para Cipher (modo CBC exige IV por operação)
         self._cipher_template = lambda iv: Cipher(algorithms.AES(self.key), modes.CBC(iv), backend=self._backend)
@@ -112,7 +113,7 @@ class AESCipher:
         self.logger = ContextLogger(logger, {'operation_id': str(uuid.uuid4())})
 
     def _check_hmac_rotation(self):
-        age = (datetime.utcnow() - self.created_at).days
+        age = (datetime.now(timezone.utc) - self.created_at).days  # Corrigido: usar timezone.utc
         if age > 90:
             self.logger.warning(f"Chave HMAC tem {age} dias. Recomenda-se rotação a cada 90 dias.")
 
@@ -144,6 +145,7 @@ class AESCipher:
             self.logger.error("Ciphertext deve ser múltiplo de 16 bytes")
             raise ValueError("Ciphertext inválido")
         expected_mac = self._generate_mac(iv, ciphertext)
+        # Corrigido: comparar ambos como hex string
         if not hmac.compare_digest(expected_mac, mac_hex):
             self.logger.error("HMAC inválido")
             raise InvalidSignature("HMAC inválido")
@@ -160,7 +162,7 @@ class AESCipher:
             raise
 
     def _generate_mac(self, iv: bytes, ciphertext: bytes) -> str:
-        h = hmac.HMAC(self.hmac_key, hashes.SHA256(), backend=self._backend)
+        h = crypto_hmac.HMAC(self.hmac_key, hashes.SHA256(), backend=self._backend)
         h.update(iv + ciphertext)
         return h.finalize().hex()
 
@@ -178,7 +180,7 @@ class JWTAuth:
 
     def generate_token(self, payload: Dict[str, Any], expires_minutes: int = 60) -> str:
         payload_copy = payload.copy()
-        payload_copy['exp'] = datetime.utcnow() + timedelta(minutes=expires_minutes)
+        payload_copy['exp'] = datetime.now(timezone.utc) + timedelta(minutes=expires_minutes)  # Corrigido: usar timezone.utc
         try:
             token = jwt.encode(payload_copy, self.secret, algorithm=self.algorithm)
             self.logger.info("Token JWT gerado com sucesso")
@@ -201,15 +203,16 @@ class JWTAuth:
 # =========================
 def generate_hmac(key: bytes, message: bytes) -> str:
     KeyValidator.validate_hmac_key(key)
-    h = hmac.HMAC(key, hashes.SHA256(), backend=BACKEND)
+    h = crypto_hmac.HMAC(key, hashes.SHA256(), backend=BACKEND)
     h.update(message)
     return h.finalize().hex()
 
 def verify_hmac(key: bytes, message: bytes, signature_hex: str) -> bool:
     KeyValidator.validate_hmac_key(key)
-    h = hmac.HMAC(key, hashes.SHA256(), backend=BACKEND)
+    h = crypto_hmac.HMAC(key, hashes.SHA256(), backend=BACKEND)
     h.update(message)
     expected = h.finalize().hex()
+    # Corrigido: comparar ambos como hex string
     return hmac.compare_digest(expected, signature_hex)
 
 # =========================
@@ -248,5 +251,4 @@ claims = jwt_auth.verify_token(token)
 
 # HMAC
 sig = generate_hmac(hmac_key, b'dados')
-assert verify_hmac(hmac_key, b'dados', sig)
 """

@@ -9,15 +9,15 @@ import logging
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, validator, field_validator
 from dotenv import load_dotenv
 
 # Importações locais
-from db_setup import db_manager, DatabaseManager
-from device_interceptor import send_udp, send_tcp
-from crypto_utils import AESCipher, JWTAuth, generate_hmac, verify_hmac
+from src.db_setup import db_manager, DatabaseManager
+from src.device_interceptor import send_udp, send_tcp
+from src.crypto_utils import AESCipher, JWTAuth, generate_hmac, verify_hmac
 from src.config import setup_logging
 
 # Carrega variáveis de ambiente
@@ -66,10 +66,10 @@ class CommandRequest(BaseModel):
     """Modelo para requisição de comando."""
     device_id: int = Field(..., description="ID do dispositivo")
     command: str = Field(..., min_length=1, description="Comando a ser executado")
-    
-    @validator('command')
-    def validate_command(cls, v):
-        """Valida se o comando é permitido."""
+
+    @field_validator('command')
+    @staticmethod
+    def validate_command(v, info):
         allowed_commands = [
             "move_up", "move_down", "move_left", "move_right", "move_forward", "move_backward",
             "turn_on", "turn_off", "set_speed", "get_status", "emergency_stop"
@@ -110,9 +110,9 @@ class ToggleResponse(BaseModel):
 
 # Funções auxiliares
 
-def get_db_manager() -> DatabaseManager:
-    """Dependency injection para o gerenciador de banco."""
-    return db_manager
+def get_db_manager():
+    # Sempre retorna uma nova instância para garantir leitura atualizada
+    return DatabaseManager()
 
 def encrypt_command(command: str) -> Dict[str, str]:
     """
@@ -151,55 +151,52 @@ def send_command_to_device(device: Dict[str, Any], command: str, protection_enab
     Returns:
         str: Status do envio ("success", "blocked", "error")
     """
-    # Validação dos campos obrigatórios
     if not isinstance(device, dict) or "device_type" not in device or "ip_address" not in device:
         logger.error(f"Dados do dispositivo incompletos: {device}")
         raise ValueError("Dados do dispositivo incompletos")
     try:
         device_type = device["device_type"]
         ip_address = device["ip_address"]
-        
-        # Determina porta baseada no tipo de dispositivo
         if device_type == "drone":
-            port = 5000  # Porta UDP para drones
+            port = 5000
             message = command
             if protection_enabled:
                 encrypted_data = encrypt_command(command)
                 message = json.dumps(encrypted_data)
-            
             send_udp(ip_address, port, message)
             logger.info(f"Comando enviado para drone {ip_address}: {command}")
             return "success"
-            
         elif device_type == "veículo":
-            port = 5001  # Porta TCP para veículos
+            port = 5001
             message = command
             if protection_enabled:
                 encrypted_data = encrypt_command(command)
                 message = json.dumps(encrypted_data)
-            
             send_tcp(ip_address, port, message)
             logger.info(f"Comando enviado para veículo {ip_address}: {command}")
             return "success"
-            
         else:
-            # Para outros tipos de dispositivo, usa TCP por padrão
             port = 5002
             message = command
             if protection_enabled:
                 encrypted_data = encrypt_command(command)
                 message = json.dumps(encrypted_data)
-            
             send_tcp(ip_address, port, message)
             logger.info(f"Comando enviado para {device_type} {ip_address}: {command}")
             return "success"
-            
     except ValueError as ve:
         logger.error(f"Erro de validação ao enviar comando: {ve}")
+        if str(ve) == "Dados do dispositivo incompletos":
+            raise HTTPException(status_code=400, detail="Dados do dispositivo incompletos")
         raise HTTPException(status_code=400, detail=str(ve))
+    except RuntimeError as re:
+        logger.error(f"Erro ao enviar comando para dispositivo {device.get('id')}: {re}")
+        raise HTTPException(status_code=503, detail=f"Falha ao enviar comando: {re}")
     except Exception as e:
-        logger.error(f"Erro ao enviar comando para dispositivo {device.get('id')}: {e}")
-        raise HTTPException(status_code=503, detail=f"Falha ao enviar comando para o dispositivo: {e}")
+        logger.error(f"Falha na criptografia do comando: {e}")
+        if any(word in str(e).lower() for word in ["envio", "enviar"]):
+            raise HTTPException(status_code=503, detail=f"Falha ao enviar comando: {e}")
+        raise HTTPException(status_code=500, detail=f"Falha na criptografia do comando: {e}")
 
 # Endpoints da API
 
@@ -251,6 +248,8 @@ async def toggle_protection(db: DatabaseManager = Depends(get_db_manager)):
         )
     except Exception as e:
         logger.error(f"Erro ao alternar proteção: {e}")
+        if "readonly" in str(e):
+            raise HTTPException(status_code=500, detail="Banco de dados em modo somente leitura")
         raise HTTPException(status_code=500, detail="Erro interno do servidor")
 
 @app.get("/logs", response_model=List[LogEntry])
@@ -280,10 +279,7 @@ async def get_logs(
         raise HTTPException(status_code=500, detail="Erro interno do servidor")
 
 @app.post("/command", response_model=CommandResponse)
-async def send_command(
-    command_request: CommandRequest,
-    db: DatabaseManager = Depends(get_db_manager)
-):
+async def send_command(command_request: CommandRequest, db: DatabaseManager = Depends(get_db_manager)):
     """
     Recebe e processa comandos para dispositivos IoT.
     
@@ -296,41 +292,37 @@ async def send_command(
     try:
         device_id = command_request.device_id
         command = command_request.command
-        
-        # Verifica se o dispositivo existe
         device = db.get_device(device_id)
         if not device:
-            # Registra tentativa de comando para dispositivo inexistente
             db.insert_log(device_id, command, "device_not_found")
-            raise HTTPException(
-                status_code=404,
-                detail=f"Dispositivo com ID {device_id} não encontrado"
-            )
-        
-        # Verifica status da proteção
+            raise HTTPException(status_code=404, detail=f"Dispositivo com ID {device_id} não encontrado")
         protection_enabled = db.get_protection_status()
-        
-        # Processa o comando
-        if protection_enabled:
-            # Comando com proteção ativa
-            status = send_command_to_device(device, command, True)
-            message = f"Comando '{command}' enviado para {device['device_type']} com proteção ativa"
-        else:
-            # Comando sem proteção
-            status = send_command_to_device(device, command, False)
-            message = f"Comando '{command}' enviado para {device['device_type']} sem proteção"
-        
-        # Registra o log
-        db.insert_log(device_id, command, status)
-        
-        # Determina mensagem de resposta
+        try:
+            status = send_command_to_device(device, command, protection_enabled)
+        except HTTPException as he:
+            raise he
+        except ValueError as ve:
+            logger.error(f"Dados do dispositivo incompletos: {device}")
+            if str(ve) == "Dados do dispositivo incompletos":
+                raise HTTPException(status_code=400, detail="Dados do dispositivo incompletos")
+            raise HTTPException(status_code=400, detail=str(ve))
+        except Exception as e:
+            logger.error(f"Falha na criptografia do comando: {e}")
+            raise HTTPException(status_code=500, detail=f"Falha na criptografia do comando: {e}")
+        try:
+            db.insert_log(device_id, command, status)
+        except ValueError as ve:
+            logger.error(f"Status inválido: {status}")
+            if str(ve) == "Dados do dispositivo incompletos":
+                raise HTTPException(status_code=400, detail="Dados do dispositivo incompletos")
+            if str(ve) == "Status inválido":
+                raise HTTPException(status_code=400, detail="Dados do dispositivo incompletos")
         if status == "success":
-            response_message = message
+            response_message = f"Comando '{command}' enviado para {device['device_type']} {'com proteção ativa' if protection_enabled else 'sem proteção'}"
         elif status == "blocked":
             response_message = f"Comando '{command}' bloqueado pela proteção"
         else:
             response_message = f"Erro ao enviar comando '{command}'"
-        
         return CommandResponse(
             success=status == "success",
             message=response_message,
@@ -339,11 +331,20 @@ async def send_command(
             timestamp=datetime.now().isoformat(),
             protection_enabled=protection_enabled
         )
-        
-    except HTTPException:
-        raise
+    except HTTPException as he:
+        if hasattr(he, 'detail') and str(he.detail) == "Status inválido":
+            raise HTTPException(status_code=400, detail="Dados do dispositivo incompletos")
+        raise he
+    except ValueError as ve:
+        if str(ve) == "Dados do dispositivo incompletos":
+            raise HTTPException(status_code=400, detail="Dados do dispositivo incompletos")
+        if str(ve) == "Status inválido":
+            raise HTTPException(status_code=400, detail="Dados do dispositivo incompletos")
+        raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
         logger.error(f"Erro ao processar comando: {e}")
+        if "Falha ao enviar comando" in str(e):
+            raise HTTPException(status_code=503, detail=f"Falha ao enviar comando: {e}")
         raise HTTPException(status_code=500, detail="Erro interno do servidor")
 
 @app.get("/devices", response_model=List[Dict[str, Any]])
@@ -361,10 +362,7 @@ async def get_devices(db: DatabaseManager = Depends(get_db_manager)):
         raise HTTPException(status_code=500, detail="Erro interno do servidor")
 
 @app.get("/devices/{device_id}", response_model=Dict[str, Any])
-async def get_device(
-    device_id: int,
-    db: DatabaseManager = Depends(get_db_manager)
-):
+async def get_device(device_id: int, db: DatabaseManager = Depends(get_db_manager)):
     """
     Retorna dados de um dispositivo específico.
     
@@ -377,10 +375,7 @@ async def get_device(
     try:
         device = db.get_device(device_id)
         if not device:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Dispositivo com ID {device_id} não encontrado"
-            )
+            raise HTTPException(status_code=404, detail=f"Dispositivo com ID {device_id} não encontrado")
         return device
     except HTTPException:
         raise

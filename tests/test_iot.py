@@ -14,27 +14,23 @@ import socket
 # Adiciona o diretório raiz ao PYTHONPATH
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.device_manager import register_device, DeviceRegister, app
+# Importações corretas dos módulos reais
+from src.main import app as main_app
+from src.device_manager import app as device_app
+from src.db_setup import DatabaseManager, db_manager
+from src.device_interceptor import send_udp, send_tcp
 
-# Importações da Camada 3
-try:
-    from src.db_setup import DatabaseManager, db_manager
-    from src.device_interceptor import send_udp, send_tcp
-except ImportError:
-    print("Aviso: Módulos da Camada 3 não encontrados, usando mocks")
-    DatabaseManager = Mock()
-    db_manager = Mock()
-    send_udp = Mock()
-    send_tcp = Mock()
-
-client = TestClient(app)
+# Cliente para testes da Camada 2 (device_manager)
+client_device = TestClient(device_app)
+# Cliente para testes da Camada 3 (main)
+client_main = TestClient(main_app)
 
 def clear_database():
     """Limpa o banco de dados antes de cada teste"""
-    # Remove ambos os bancos de dados se existirem
-    for db_file in ['devices.db', 'iotrac.db']:
-        if os.path.exists(db_file):
-            os.remove(db_file)
+    # Unificado: limpar apenas iotrac.db
+    db_file = 'iotrac.db'
+    if os.path.exists(db_file):
+        os.remove(db_file)
 
 @pytest.fixture(autouse=True)
 def setup_database():
@@ -56,7 +52,7 @@ class TestDeviceRegistration:
             "device_type": "sensor_temperature",
             "ip_address": f"192.168.1.{uuid.uuid4().int % 255}"  # IP único
         }
-        response = client.post("/device/register", json=test_device)
+        response = client_device.post("/device/register", json=test_device)
         print(f"Response status: {response.status_code}")
         print(f"Response body: {response.json()}")
         assert response.status_code == 200
@@ -71,7 +67,7 @@ class TestDeviceRegistration:
             "device_type": "",  # tipo inválido
             "ip_address": "192.168.1.100"
         }
-        response = client.post("/device/register", json=invalid_device)
+        response = client_device.post("/device/register", json=invalid_device)
         assert response.status_code == 422  # Erro de validação do Pydantic
 
     def test_register_device_invalid_ip(self):
@@ -80,7 +76,7 @@ class TestDeviceRegistration:
             "device_type": "sensor_temperature",
             "ip_address": "256.256.256.256"  # IP inválido
         }
-        response = client.post("/device/register", json=invalid_device)
+        response = client_device.post("/device/register", json=invalid_device)
         assert response.status_code == 422  # Erro de validação do Pydantic
 
 # ============================================================================
@@ -255,7 +251,7 @@ class TestAPIEndpoints:
     
     def test_list_devices(self):
         """Teste do endpoint de listagem de dispositivos"""
-        response = client.get("/devices")
+        response = client_main.get("/devices")
         assert response.status_code == 200
         assert isinstance(response.json(), list)
 
@@ -263,36 +259,36 @@ class TestAPIEndpoints:
         """Teste do endpoint GET /devices/{device_id} (sucesso e 404)"""
         # Registra um dispositivo
         test_device = {"device_type": "drone", "ip_address": f"192.168.1.{uuid.uuid4().int % 255}"}
-        resp = client.post("/device/register", json=test_device)
+        resp = client_device.post("/device/register", json=test_device)
         assert resp.status_code == 200
         device_id = resp.json()["id"]
         # Busca o dispositivo existente
-        response = client.get(f"/devices/{device_id}")
+        response = client_main.get(f"/devices/{device_id}")
         assert response.status_code == 200
         assert response.json()["id"] == device_id
         # Busca um dispositivo inexistente
-        response = client.get("/devices/999999")
+        response = client_main.get("/devices/999999")
         assert response.status_code == 404
         assert "não encontrado" in response.json()["detail"]
 
     def test_get_status_and_toggle_protection(self):
         """Testa GET /status e POST /toggle_protection sem mocks, usando banco real"""
         # Status inicial
-        response = client.get("/status")
+        response = client_main.get("/status")
         assert response.status_code == 200
         assert "protection_enabled" in response.json()
         # Alterna proteção
-        response2 = client.post("/toggle_protection")
+        response2 = client_main.post("/toggle_protection")
         assert response2.status_code == 200
         assert "protection_enabled" in response2.json()
         assert "message" in response2.json()
 
     def test_logs_limit_validation(self):
         """Testa mensagem de erro detalhada para limit inválido em /logs"""
-        response = client.get("/logs?limit=0")
+        response = client_main.get("/logs?limit=0")
         assert response.status_code == 400
         assert "Limit inválido" in response.json()["detail"]
-        response = client.get("/logs?limit=2000")
+        response = client_main.get("/logs?limit=2000")
         assert response.status_code == 400
         assert "Limit inválido" in response.json()["detail"]
 
@@ -300,7 +296,7 @@ class TestAPIEndpoints:
         """Testa POST /command com falha de criptografia (mock aes_cipher.encrypt)"""
         # Registra dispositivo
         test_device = {"device_type": "drone", "ip_address": f"192.168.1.{uuid.uuid4().int % 255}"}
-        resp = client.post("/device/register", json=test_device)
+        resp = client_device.post("/device/register", json=test_device)
         assert resp.status_code == 200
         device_id = resp.json()["id"]
         # Mocka aes_cipher.encrypt para lançar exceção
@@ -308,16 +304,16 @@ class TestAPIEndpoints:
         monkeypatch.setattr(main_module.aes_cipher, "encrypt", lambda *_: (_ for _ in ()).throw(Exception("erro fake")))
         # Envia comando protegido
         payload = {"device_id": device_id, "command": "move_up"}
-        response = client.post("/command", json=payload)
+        response = client_main.post("/command", json=payload)
         assert response.status_code == 500
         assert "Falha na criptografia do comando" in response.json()["detail"]
 
     def test_command_device_incompleto(self):
         """Testa POST /command para device incompleto (simula device sem campos obrigatórios)"""
         # Simula banco retornando device incompleto
-        with patch("src.main.db_manager.get_device", return_value={"id": 1}):
+        with patch("src.db_setup.db_manager.get_device", return_value={"id": 1}):
             payload = {"device_id": 1, "command": "move_up"}
-            response = client.post("/command", json=payload)
+            response = client_main.post("/command", json=payload)
             assert response.status_code == 400
             assert "Dados do dispositivo incompletos" in response.json()["detail"]
 
@@ -325,14 +321,14 @@ class TestAPIEndpoints:
         """Testa POST /command com falha de envio (mock send_udp para lançar exceção)"""
         # Registra dispositivo
         test_device = {"device_type": "drone", "ip_address": f"192.168.1.{uuid.uuid4().int % 255}"}
-        resp = client.post("/device/register", json=test_device)
+        resp = client_device.post("/device/register", json=test_device)
         assert resp.status_code == 200
         device_id = resp.json()["id"]
         # Mocka send_udp para lançar exceção
         from src import main as main_module
         monkeypatch.setattr(main_module, "send_udp", lambda *_: (_ for _ in ()).throw(Exception("erro fake envio")))
         payload = {"device_id": device_id, "command": "move_up"}
-        response = client.post("/command", json=payload)
+        response = client_main.post("/command", json=payload)
         assert response.status_code == 503
         assert "Falha ao enviar comando" in response.json()["detail"]
 
@@ -347,7 +343,8 @@ class TestDeviceInterceptor:
     def test_send_udp(self, mock_socket):
         """Teste de envio UDP"""
         mock_sock = Mock()
-        mock_socket.return_value = mock_sock
+        # Corrigido: suportar context manager protocol
+        mock_socket.return_value.__enter__.return_value = mock_sock
         
         send_udp("192.168.1.100", 5000, "test_message")
         
@@ -361,7 +358,8 @@ class TestDeviceInterceptor:
     def test_send_tcp(self, mock_socket):
         """Teste de envio TCP"""
         mock_sock = Mock()
-        mock_socket.return_value = mock_sock
+        # Corrigido: suportar context manager protocol
+        mock_socket.return_value.__enter__.return_value = mock_sock
         
         send_tcp("192.168.1.100", 5001, "test_message")
         
@@ -373,9 +371,6 @@ class TestDeviceInterceptor:
         
         # Verifica se a mensagem foi enviada
         mock_sock.sendall.assert_called_once_with(b"test_message")
-        
-        # Verifica se a conexão foi fechada
-        mock_sock.close.assert_called_once()
 
     def test_send_udp_ip_invalido(self):
         with pytest.raises(ValueError, match="Endereço IP inválido"):
@@ -404,7 +399,8 @@ class TestDeviceInterceptor:
     @patch('socket.socket')
     def test_send_udp_timeout(self, mock_socket):
         mock_sock = Mock()
-        mock_socket.return_value = mock_sock
+        # Corrigido: suportar context manager protocol
+        mock_socket.return_value.__enter__.return_value = mock_sock
         mock_sock.sendto.side_effect = socket.timeout
         with pytest.raises(RuntimeError, match="Timeout ao enviar UDP"):
             send_udp("192.168.1.100", 5000, "msg", timeout=0.01)
@@ -412,7 +408,8 @@ class TestDeviceInterceptor:
     @patch('socket.socket')
     def test_send_tcp_timeout(self, mock_socket):
         mock_sock = Mock()
-        mock_socket.return_value = mock_sock
+        # Corrigido: suportar context manager protocol
+        mock_socket.return_value.__enter__.return_value = mock_sock
         mock_sock.connect.side_effect = socket.timeout
         with pytest.raises(RuntimeError, match="Timeout ao conectar/enviar"):
             send_tcp("192.168.1.100", 5001, "msg", timeout=0.01)
@@ -420,7 +417,8 @@ class TestDeviceInterceptor:
     @patch('socket.socket')
     def test_send_tcp_conexao_recusada(self, mock_socket):
         mock_sock = Mock()
-        mock_socket.return_value = mock_sock
+        # Corrigido: suportar context manager protocol
+        mock_socket.return_value.__enter__.return_value = mock_sock
         mock_sock.connect.side_effect = ConnectionRefusedError
         with pytest.raises(RuntimeError, match="Conexão recusada"):
             send_tcp("192.168.1.100", 5001, "msg")
@@ -439,12 +437,12 @@ class TestIntegration:
             "device_type": "drone",
             "ip_address": f"192.168.1.{uuid.uuid4().int % 255}"
         }
-        response = client.post("/device/register", json=test_device)
+        response = client_device.post("/device/register", json=test_device)
         assert response.status_code == 200
         device_id = response.json()["id"]
         
         # 2. Verifica se o dispositivo foi registrado
-        response = client.get("/devices")
+        response = client_main.get("/devices")
         assert response.status_code == 200
         devices = response.json()
         assert len(devices) > 0

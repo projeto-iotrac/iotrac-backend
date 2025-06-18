@@ -14,14 +14,15 @@ from src.config import setup_logging
 setup_logging()
 logger = logging.getLogger(__name__)
 
-DATABASE_PATH = "devices.db"
+# Caminho absoluto do banco de dados na raiz do projeto
+DATABASE_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'iotrac.db'))
 VALID_STATUSES = {"pending", "success", "error", "blocked"}
 
 class DatabaseManager:
     """
     Classe para gerenciar o banco de dados SQLite da aplicação IOTRAC.
     Responsável pela criação de tabelas, inserção de logs e consultas.
-    UNIFICADO: Usa o mesmo banco de dados que device_manager.py
+    UNIFICADO: Usa o mesmo banco de dados que device_manager.py (iotrac.db)
     """
     
     def __init__(self, db_path: str = DATABASE_PATH):
@@ -349,7 +350,7 @@ def get_device_by_id(device_id: int) -> Optional[Dict[str, Any]]:
     return db_manager.get_device(device_id)
 
 def get_protection_enabled() -> bool:
-    """Retorna se a proteção está ativa."""
+    """Retorna o status da proteção."""
     return db_manager.get_protection_status()
 
 if __name__ == "__main__":

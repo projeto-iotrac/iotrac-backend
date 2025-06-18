@@ -29,6 +29,11 @@ venv/
 env/
 ENV/
 
+# Variáveis de ambiente (SEGURANÇA)
+.env
+.env.local
+.env.production
+
 # IDEs
 .idea/
 .vscode/

@@ -8,6 +8,10 @@ from typing import Annotated, List
 from pydantic.types import StringConstraints
 from ipaddress import ip_address, AddressValueError
 import sqlite3
+import os
+
+# Caminho absoluto do banco de dados na raiz do projeto
+DB_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'iotrac.db'))
 
 # Inicializa o app FastAPI
 app = FastAPI(title="IoT Protection App")
@@ -33,25 +37,42 @@ class DeviceOut(BaseModel):
 
 # Função utilitária para inicializar o banco de dados SQLite e criar a tabela se não existir
 def init_db():
-    conn = sqlite3.connect('devices.db')
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS devices (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            device_type TEXT NOT NULL,
-            ip_address TEXT NOT NULL UNIQUE
-        )
-    ''')
-    conn.commit()
-    conn.close()
+    """Inicializa o banco de dados e cria as tabelas necessárias"""
+    try:
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+        cursor = conn.cursor()
+        
+        # Cria a tabela se não existir
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS devices (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                device_type TEXT NOT NULL,
+                ip_address TEXT NOT NULL UNIQUE,
+                registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # Garante que as mudanças sejam salvas
+        conn.commit()
+        conn.close()
+        
+        print(f"Banco de dados inicializado: {DB_PATH}")
+        
+    except Exception as e:
+        print(f"Erro ao inicializar banco de dados: {e}")
+        raise
 
-# Inicializa o banco ao iniciar o app
+# Inicializa o banco ao importar o módulo
 init_db()
 
 # Endpoint para registrar um novo dispositivo IoT
 @app.post("/device/register", response_model=DeviceOut)
 def register_device(device: DeviceRegister):
-    conn = sqlite3.connect('devices.db')
+    """Registra um novo dispositivo no banco de dados"""
+    # Garante que o banco está inicializado
+    init_db()
+    
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     try:
         # Insere o dispositivo na tabela
@@ -74,7 +95,11 @@ def register_device(device: DeviceRegister):
 # Endpoint para listar todos os dispositivos registrados
 @app.get("/devices", response_model=List[DeviceOut])
 def list_devices():
-    conn = sqlite3.connect('devices.db')
+    """Lista todos os dispositivos registrados"""
+    # Garante que o banco está inicializado
+    init_db()
+    
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute("SELECT id, device_type, ip_address FROM devices")
     rows = cursor.fetchall()
