@@ -149,17 +149,41 @@ curl -X POST "http://localhost:8000/command" \
 curl -X GET "http://localhost:8000/status"
 ```
 
+#### Alternando Proteção Global
+```bash
+curl -X POST "http://localhost:8000/toggle_protection"
+```
+
+#### Verificando Proteção de um Dispositivo
+```bash
+curl -X GET "http://localhost:8000/devices/1/protection"
+```
+
+#### Alternando Proteção de um Dispositivo
+```bash
+curl -X POST "http://localhost:8000/devices/1/protection/toggle"
+```
+
+#### Removendo um Dispositivo
+```bash
+curl -X DELETE "http://localhost:8000/devices/1"
+```
+
 ## 📊 Endpoints da API
 
 | Método | Endpoint | Descrição |
 |--------|----------|-----------|
 | `GET` | `/` | Informações básicas da API |
-| `GET` | `/status` | Status da proteção |
-| `POST` | `/toggle_protection` | Alternar proteção |
-| `GET` | `/devices` | Listar dispositivos |
-| `GET` | `/devices/{id}` | Detalhes do dispositivo |
-| `POST` | `/command` | Enviar comando |
-| `GET` | `/logs` | Logs de comandos |
+| `GET` | `/status` | Status da proteção global |
+| `POST` | `/toggle_protection` | Alternar proteção global |
+| `GET` | `/devices` | Listar todos os dispositivos |
+| `GET` | `/devices/{id}` | Detalhes de um dispositivo específico |
+| `POST` | `/device/register` | Registrar novo dispositivo |
+| `DELETE` | `/devices/{id}` | Remover dispositivo |
+| `GET` | `/devices/{id}/protection` | Status de proteção de um dispositivo |
+| `POST` | `/devices/{id}/protection/toggle` | Alternar proteção de um dispositivo |
+| `POST` | `/command` | Enviar comando para dispositivo |
+| `GET` | `/logs` | Logs de comandos do sistema |
 
 ## 🧪 Testes
 
