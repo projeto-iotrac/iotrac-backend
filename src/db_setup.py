@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import Optional, List, Dict, Any
 import logging
 from src.config import setup_logging
+from fastapi import HTTPException
 
 # Configuração de logging centralizada
 setup_logging()
@@ -67,9 +68,17 @@ class DatabaseManager:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     device_type TEXT NOT NULL,
                     ip_address TEXT NOT NULL UNIQUE,
-                    registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    protection_enabled BOOLEAN DEFAULT 1
                 )
             ''')
+            
+            # Adicionar coluna protection_enabled se não existir (para compatibilidade)
+            try:
+                cursor.execute("ALTER TABLE devices ADD COLUMN protection_enabled BOOLEAN DEFAULT 1")
+            except sqlite3.OperationalError:
+                # Coluna já existe, ignorar erro
+                pass
             
             # Tabela de logs de comandos (nova funcionalidade da Camada 3)
             cursor.execute('''
@@ -159,7 +168,7 @@ class DatabaseManager:
         try:
             cursor = self.conn.cursor()
             cursor.execute(
-                "SELECT id, device_type, ip_address, registered_at FROM devices WHERE id = ?",
+                "SELECT id, device_type, ip_address, registered_at, protection_enabled FROM devices WHERE id = ?",
                 (device_id,)
             )
             row = cursor.fetchone()
@@ -169,7 +178,8 @@ class DatabaseManager:
                     "id": row[0],
                     "device_type": row[1],
                     "ip_address": row[2],
-                    "registered_at": row[3]
+                    "registered_at": row[3],
+                    "protection_enabled": bool(row[4]) if row[4] is not None else True
                 }
             return None
                 
@@ -188,7 +198,7 @@ class DatabaseManager:
         try:
             cursor = self.conn.cursor()
             cursor.execute(
-                "SELECT id, device_type, ip_address, registered_at FROM devices ORDER BY id"
+                "SELECT id, device_type, ip_address, registered_at, protection_enabled FROM devices ORDER BY id"
             )
             rows = cursor.fetchall()
             
@@ -197,7 +207,8 @@ class DatabaseManager:
                     "id": row[0],
                     "device_type": row[1],
                     "ip_address": row[2],
-                    "registered_at": row[3]
+                    "registered_at": row[3],
+                    "protection_enabled": bool(row[4]) if row[4] is not None else True
                 }
                 for row in rows
             ]
@@ -332,6 +343,125 @@ class DatabaseManager:
         new_status = not current_status
         self.set_protection_status(new_status)
         return new_status
+
+    def add_device(self, device_data: Dict[str, Any]) -> int:
+        """
+        Adiciona um novo dispositivo ao banco de dados.
+        
+        Args:
+            device_data (Dict[str, Any]): Dados do dispositivo a ser adicionado
+            
+        Returns:
+            int: ID do dispositivo inserido
+        """
+        try:
+            return self.insert_device(device_data["device_type"], device_data["ip_address"])
+        except sqlite3.IntegrityError:
+            logger.warning(f"IP {device_data['ip_address']} já está registrado")
+            raise HTTPException(status_code=400, detail=f"IP {device_data['ip_address']} já está registrado")
+        except Exception as e:
+            logger.error(f"Erro ao adicionar dispositivo: {e}")
+            raise HTTPException(status_code=500, detail=f"Erro ao adicionar dispositivo: {str(e)}")
+
+    def get_device_by_ip(self, ip_address: str) -> Optional[Dict[str, Any]]:
+        """
+        Busca um dispositivo pelo endereço IP.
+        
+        Args:
+            ip_address (str): Endereço IP do dispositivo
+            
+        Returns:
+            Optional[Dict[str, Any]]: Dados do dispositivo ou None se não encontrado
+        """
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                "SELECT id, device_type, ip_address, registered_at FROM devices WHERE ip_address = ?",
+                (ip_address,)
+            )
+            row = cursor.fetchone()
+            
+            if row:
+                return {
+                    "id": row[0],
+                    "device_type": row[1],
+                    "ip_address": row[2],
+                    "registered_at": row[3]
+                }
+            return None
+                
+        except sqlite3.Error as e:
+            logger.error(f"Erro ao buscar dispositivo por IP: {e}")
+            raise
+
+    def delete_device(self, device_id: int) -> None:
+        """
+        Remove um dispositivo do banco de dados.
+        
+        Args:
+            device_id (int): ID do dispositivo a ser removido
+        """
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("DELETE FROM devices WHERE id = ?", (device_id,))
+            self.conn.commit()
+            
+            if cursor.rowcount == 0:
+                raise ValueError(f"Dispositivo {device_id} não encontrado")
+                
+        except sqlite3.Error as e:
+            logger.error(f"Erro ao remover dispositivo: {e}")
+            raise
+
+    def get_device_protection_status(self, device_id: int) -> bool:
+        """
+        Retorna o status de proteção de um dispositivo específico.
+        
+        Args:
+            device_id (int): ID do dispositivo
+            
+        Returns:
+            bool: True se a proteção estiver ativa, False caso contrário
+        """
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT protection_enabled FROM devices WHERE id = ?", (device_id,))
+            row = cursor.fetchone()
+            return bool(row[0]) if row and row[0] is not None else True
+                
+        except sqlite3.Error as e:
+            logger.error(f"Erro ao buscar status de proteção do dispositivo {device_id}: {e}")
+            return True  # Por padrão, proteção ativa
+    
+    def toggle_device_protection(self, device_id: int) -> bool:
+        """
+        Alterna o status de proteção de um dispositivo específico.
+        
+        Args:
+            device_id (int): ID do dispositivo
+            
+        Returns:
+            bool: Novo status da proteção
+        """
+        try:
+            current_status = self.get_device_protection_status(device_id)
+            new_status = not current_status
+            
+            cursor = self.conn.cursor()
+            cursor.execute(
+                "UPDATE devices SET protection_enabled = ? WHERE id = ?",
+                (1 if new_status else 0, device_id)
+            )
+            self.conn.commit()
+            
+            status = "ativada" if new_status else "desativada"
+            logger.info(f"Proteção do dispositivo {device_id} {status}")
+            
+            return new_status
+                
+        except sqlite3.Error as e:
+            logger.error(f"Erro ao alternar proteção do dispositivo {device_id}: {e}")
+            raise
 
 # Instância global do gerenciador de banco
 db_manager = DatabaseManager()

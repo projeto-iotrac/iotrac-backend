@@ -11,6 +11,7 @@ from datetime import datetime
 
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, validator, field_validator
 from dotenv import load_dotenv
 
@@ -46,6 +47,15 @@ app = FastAPI(
     title="IOTRAC - Camada 3",
     description="API para gerenciamento de dispositivos IoT com proteção e logs",
     version="1.0.0"
+)
+
+# Configuração CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Permite todas as origens em desenvolvimento
+    allow_credentials=True,
+    allow_methods=["*"],  # Permite todos os métodos
+    allow_headers=["*"],  # Permite todos os headers
 )
 
 # Inicialização dos componentes de segurança
@@ -107,6 +117,29 @@ class ToggleResponse(BaseModel):
     protection_enabled: bool
     message: str
     timestamp: str
+
+class DeviceRegister(BaseModel):
+    """Modelo para registro de dispositivo."""
+    device_type: str = Field(..., description="Tipo do dispositivo")
+    ip_address: str = Field(..., description="Endereço IP do dispositivo")
+
+    @field_validator('device_type')
+    @staticmethod
+    def validate_device_type(v):
+        allowed_types = ["drone", "veículo", "smart-lamp", "smart-lock", 
+                        "security-camera", "smart-tv", "smart-thermostat"]
+        if v not in allowed_types:
+            raise ValueError(f"Tipo de dispositivo '{v}' não é permitido. Tipos válidos: {allowed_types}")
+        return v
+
+    @field_validator('ip_address')
+    @staticmethod
+    def validate_ip(v):
+        import re
+        ip_pattern = r'^(\d{1,3}\.){3}\d{1,3}$'
+        if not re.match(ip_pattern, v):
+            raise ValueError("Endereço IP inválido")
+        return v
 
 # Funções auxiliares
 
@@ -383,6 +416,132 @@ async def get_device(device_id: int, db: DatabaseManager = Depends(get_db_manage
         logger.error(f"Erro ao obter dispositivo {device_id}: {e}")
         raise HTTPException(status_code=500, detail="Erro interno do servidor")
 
+@app.post("/device/register", response_model=Dict[str, Any])
+async def register_device(device: DeviceRegister, db: DatabaseManager = Depends(get_db_manager)):
+    """
+    Registra um novo dispositivo.
+    """
+    try:
+        logger.info(f"Tentando registrar dispositivo: {device.dict()}")
+        
+        # Verificar se o IP já está registrado
+        existing_device = db.get_device_by_ip(device.ip_address)
+        if existing_device:
+            logger.warning(f"IP {device.ip_address} já está registrado")
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Dispositivo já registrado com este IP: {device.ip_address}"
+            )
+            
+        device_data = {
+            "device_type": device.device_type,
+            "ip_address": device.ip_address,
+            "registered_at": datetime.now().isoformat()
+        }
+        
+        device_id = db.add_device(device_data)
+        device_data["id"] = device_id
+        logger.info(f"Dispositivo registrado com sucesso: {device_data}")
+        return device_data
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro inesperado ao registrar dispositivo: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erro inesperado ao registrar dispositivo: {str(e)}")
+
+@app.delete("/devices/{device_id}", response_model=Dict[str, str])
+async def delete_device(device_id: int, db: DatabaseManager = Depends(get_db_manager)):
+    """
+    Remove um dispositivo.
+    
+    Args:
+        device_id (int): ID do dispositivo a ser removido
+        
+    Returns:
+        Dict[str, str]: Mensagem de sucesso
+    """
+    try:
+        logger.info(f"Tentando remover dispositivo {device_id}")
+        
+        # Verificar se o dispositivo existe
+        device = db.get_device(device_id)
+        if not device:
+            logger.warning(f"Dispositivo {device_id} não encontrado")
+            raise HTTPException(status_code=404, detail=f"Dispositivo {device_id} não encontrado")
+            
+        # Remover dispositivo
+        db.delete_device(device_id)
+        logger.info(f"Dispositivo {device_id} removido com sucesso")
+        return {"message": f"Dispositivo {device_id} removido com sucesso"}
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao remover dispositivo {device_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erro ao remover dispositivo: {str(e)}")
+
+@app.get("/devices/{device_id}/protection", response_model=Dict[str, Any])
+async def get_device_protection(device_id: int, db: DatabaseManager = Depends(get_db_manager)):
+    """
+    Retorna o status de proteção de um dispositivo específico.
+    
+    Args:
+        device_id (int): ID do dispositivo
+        
+    Returns:
+        Dict[str, Any]: Status de proteção do dispositivo
+    """
+    try:
+        # Verificar se o dispositivo existe
+        device = db.get_device(device_id)
+        if not device:
+            raise HTTPException(status_code=404, detail=f"Dispositivo {device_id} não encontrado")
+            
+        protection_enabled = db.get_device_protection_status(device_id)
+        return {
+            "device_id": device_id,
+            "protection_enabled": protection_enabled,
+            "timestamp": datetime.now().isoformat()
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao obter proteção do dispositivo {device_id}: {e}")
+        raise HTTPException(status_code=500, detail="Erro interno do servidor")
+
+@app.post("/devices/{device_id}/protection/toggle", response_model=Dict[str, Any])
+async def toggle_device_protection(device_id: int, db: DatabaseManager = Depends(get_db_manager)):
+    """
+    Alterna o status de proteção de um dispositivo específico.
+    
+    Args:
+        device_id (int): ID do dispositivo
+        
+    Returns:
+        Dict[str, Any]: Novo status de proteção do dispositivo
+    """
+    try:
+        # Verificar se o dispositivo existe
+        device = db.get_device(device_id)
+        if not device:
+            raise HTTPException(status_code=404, detail=f"Dispositivo {device_id} não encontrado")
+            
+        new_status = db.toggle_device_protection(device_id)
+        status_text = "ativada" if new_status else "desativada"
+        
+        return {
+            "device_id": device_id,
+            "protection_enabled": new_status,
+            "message": f"Proteção do dispositivo {device_id} {status_text} com sucesso",
+            "timestamp": datetime.now().isoformat()
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao alternar proteção do dispositivo {device_id}: {e}")
+        raise HTTPException(status_code=500, detail="Erro interno do servidor")
+
 # Middleware para logging de requisições
 @app.middleware("http")
 async def log_requests(request, call_next):
@@ -421,6 +580,10 @@ if __name__ == "__main__":
     logger.info("  POST /command - Enviar comando")
     logger.info("  GET  /devices - Listar dispositivos")
     logger.info("  GET  /devices/{device_id} - Detalhes do dispositivo")
+    logger.info("  POST /device/register - Registrar dispositivo")
+    logger.info("  DELETE /devices/{device_id} - Remover dispositivo")
+    logger.info("  GET  /devices/{device_id}/protection - Status de proteção do dispositivo")
+    logger.info("  POST /devices/{device_id}/protection/toggle - Alternar proteção do dispositivo")
     
     uvicorn.run(
         "main:app",
