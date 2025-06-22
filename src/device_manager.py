@@ -107,4 +107,22 @@ def list_devices():
     # Converte os resultados para o modelo de resposta
     return [DeviceOut(id=row[0], device_type=row[1], ip_address=row[2]) for row in rows]
 
-# Para rodar: uvicorn iot_protection_app:app --reload
+# Endpoint para deletar dispositivo por Id
+@app.delete("/device/{device_id}", response_model=DeviceOut)
+def delete_device_by_id(device_id: int):
+    """Exclui um dispositivo pelo ID"""
+    init_db()
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    cursor = conn.cursor()
+    # Busca o dispositivo antes de deletar para retornar os dados
+    cursor.execute("SELECT id, device_type, ip_address FROM devices WHERE id = ?", (device_id,))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Device not found")
+    # Deleta o dispositivo
+    cursor.execute("DELETE FROM devices WHERE id = ?", (device_id,))
+    conn.commit()
+    conn.close()
+    return DeviceOut(id=row[0], device_type=row[1], ip_address=row[2])
+# Para rodar: uvicorn src.device_manager:app --reload
