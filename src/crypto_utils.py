@@ -23,7 +23,7 @@ except ImportError:
     AWS_AVAILABLE = False
 
 from jose import jwt, ExpiredSignatureError, JWTError
-from .config import setup_logging
+from src.config import setup_logging
 
 # Carregar variáveis de ambiente
 load_dotenv()

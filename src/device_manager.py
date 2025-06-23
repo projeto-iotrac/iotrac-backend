@@ -11,7 +11,7 @@ import sqlite3
 import os
 
 # Caminho absoluto do banco de dados na raiz do projeto
-DB_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'iotrac.db'))
+DB_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'database', 'iotrac.db'))
 
 # Inicializa o app FastAPI
 app = FastAPI(title="IoT Protection App")

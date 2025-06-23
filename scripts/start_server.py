@@ -36,20 +36,20 @@ class ServerManager:
             logger.info("🚀 Iniciando servidor IOTRAC Backend...")
             
             # Verificar se estamos no diretório correto
-            if not Path("src/main.py").exists():
+            if not Path("../src/main.py").exists():
                 logger.error("❌ Arquivo src/main.py não encontrado!")
                 logger.error("   Certifique-se de estar no diretório iotrac-backend")
                 return False
             
             # Verificar se o ambiente virtual existe
-            if not Path("venv/bin/activate").exists():
+            if not Path("../venv/bin/activate").exists():
                 logger.error("❌ Ambiente virtual não encontrado!")
                 logger.error("   Execute: python -m venv venv")
                 return False
             
             # Comando para iniciar o servidor
             cmd = [
-                "venv/bin/python", "-m", "uvicorn",
+                "../venv/bin/python", "-m", "uvicorn",
                 "src.main:app",
                 "--host", "0.0.0.0",
                 "--port", "8000",

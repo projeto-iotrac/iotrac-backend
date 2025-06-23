@@ -16,7 +16,7 @@ setup_logging()
 logger = logging.getLogger(__name__)
 
 # Caminho absoluto do banco de dados na raiz do projeto
-DATABASE_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'iotrac.db'))
+DATABASE_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'database', 'iotrac.db'))
 VALID_STATUSES = {"pending", "success", "error", "blocked"}
 
 class DatabaseManager:

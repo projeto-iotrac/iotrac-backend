@@ -9,12 +9,13 @@ import logging
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 
-from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi import FastAPI, HTTPException, Depends, Request, Query
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, validator, field_validator
 from dotenv import load_dotenv
 import hmac
+import jwt
 
 # Importações locais
 from src.db_setup import db_manager, DatabaseManager
@@ -23,7 +24,7 @@ from src.crypto_utils import AESCipher, JWTAuth, generate_hmac, verify_hmac
 from src.config import setup_logging
 
 # Carrega variáveis de ambiente
-load_dotenv()
+load_dotenv("config/.env")
 
 # Logging centralizado
 setup_logging()
@@ -36,6 +37,7 @@ SERVER_HOST = os.getenv("SERVER_HOST", "0.0.0.0")
 # Configurações de segurança
 AES_KEY = os.getenv("AES_KEY")
 HMAC_KEY = os.getenv("HMAC_KEY")
+JWT_SECRET = os.getenv('JWT_SECRET', 'iotrac_secret_key')
 
 # Validação das chaves de segurança
 if not AES_KEY or len(AES_KEY.encode()) < 32:
@@ -50,13 +52,13 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Configuração CORS
+# Configurar CORS para permitir conexões do frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Permite todas as origens em desenvolvimento
+    allow_origins=["*"],  # Em produção, especifique os domínios permitidos
     allow_credentials=True,
-    allow_methods=["*"],  # Permite todos os métodos
-    allow_headers=["*"],  # Permite todos os headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Inicialização dos componentes de segurança
@@ -368,6 +370,12 @@ async def send_command(command_request: CommandRequest, db: DatabaseManager = De
             
             if not is_encrypted:
                 logger.warning(f"Comando não criptografado quando proteção do dispositivo {device_id} ativa - BLOQUEANDO")
+                # Insere log de comando bloqueado
+                try:
+                    db.insert_log(device_id, command, "blocked")
+                except Exception as log_error:
+                    logger.error(f"Erro ao inserir log de comando bloqueado: {log_error}")
+                
                 # BLOQUEIA o comando quando proteção do dispositivo está ativa
                 raise HTTPException(
                     status_code=401, 

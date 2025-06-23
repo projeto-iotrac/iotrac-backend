@@ -1,4 +1,18 @@
-# Python
+# Arquivos de configuração sensíveis
+config/.env
+config/.env.local
+config/.env.production
+config/.env.backup*
+
+# Banco de dados
+database/iotrac.db
+database/*.db
+
+# Logs
+*.log
+server.log
+
+# Cache Python
 __pycache__/
 *.py[cod]
 *$py.class
@@ -19,26 +33,39 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-
-# Banco de dados
-*.db
-*.sqlite3
+MANIFEST
 
 # Ambiente virtual
 venv/
 env/
 ENV/
-
-# Variáveis de ambiente (SEGURANÇA)
-.env
-.env.local
-.env.production
+env.bak/
+venv.bak/
 
 # IDEs
-.idea/
 .vscode/
+.idea/
 *.swp
 *.swo
+*~
 
-# Logs
-*.log 
+# Sistema
+.DS_Store
+Thumbs.db
+
+# Testes
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+
+# Arquivos temporários
+*.tmp
+*.temp
+*.bak
+*.backup 
