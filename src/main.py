@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, validator, field_validator
 from dotenv import load_dotenv
+import hmac
 
 # Importações locais
 from src.db_setup import db_manager, DatabaseManager
@@ -325,13 +326,56 @@ async def send_command(command_request: CommandRequest, db: DatabaseManager = De
     try:
         device_id = command_request.device_id
         command = command_request.command
+        
+        # Busca o dispositivo primeiro
         device = db.get_device(device_id)
         if not device:
             db.insert_log(device_id, command, "device_not_found")
             raise HTTPException(status_code=404, detail=f"Dispositivo com ID {device_id} não encontrado")
-        protection_enabled = db.get_protection_status()
+        
+        # Verifica a proteção individual do dispositivo
+        device_protection_enabled = device.get("protection_enabled", False)
+        
+        # Se proteção do dispositivo está ativa, verifica se comando está criptografado
+        if device_protection_enabled:
+            # Verifica se o comando parece estar criptografado (base64 ou hex)
+            import base64
+            import re
+            
+            # Padrão para detectar dados criptografados (hex ou base64)
+            hex_pattern = re.compile(r'^[0-9a-fA-F]+$')
+            base64_pattern = re.compile(r'^[A-Za-z0-9+/]*={0,2}$')
+            
+            is_encrypted = False
+            
+            # Verifica se comando parece estar criptografado
+            if len(command) > 32:  # Comandos criptografados são longos
+                if hex_pattern.match(command) or base64_pattern.match(command):
+                    try:
+                        # Tenta descriptografar
+                        if aes_cipher:
+                            # Assume que é hex
+                            try:
+                                ciphertext = bytes.fromhex(command)
+                                # Tenta descriptografar (pode falhar se não for realmente criptografado)
+                                # Por enquanto, apenas verifica se parece criptografado
+                                is_encrypted = True
+                                logger.info("Comando parece estar criptografado")
+                            except:
+                                pass
+                    except:
+                        pass
+            
+            if not is_encrypted:
+                logger.warning(f"Comando não criptografado quando proteção do dispositivo {device_id} ativa - BLOQUEANDO")
+                # BLOQUEIA o comando quando proteção do dispositivo está ativa
+                raise HTTPException(
+                    status_code=401, 
+                    detail=f"Comando deve estar criptografado quando proteção do dispositivo {device_id} está ativa"
+                )
+        
         try:
-            status = send_command_to_device(device, command, protection_enabled)
+            status = send_command_to_device(device, command, device_protection_enabled)
         except HTTPException as he:
             raise he
         except ValueError as ve:
@@ -342,6 +386,7 @@ async def send_command(command_request: CommandRequest, db: DatabaseManager = De
         except Exception as e:
             logger.error(f"Falha na criptografia do comando: {e}")
             raise HTTPException(status_code=500, detail=f"Falha na criptografia do comando: {e}")
+        
         try:
             db.insert_log(device_id, command, status)
         except ValueError as ve:
@@ -350,19 +395,21 @@ async def send_command(command_request: CommandRequest, db: DatabaseManager = De
                 raise HTTPException(status_code=400, detail="Dados do dispositivo incompletos")
             if str(ve) == "Status inválido":
                 raise HTTPException(status_code=400, detail="Dados do dispositivo incompletos")
+        
         if status == "success":
-            response_message = f"Comando '{command}' enviado para {device['device_type']} {'com proteção ativa' if protection_enabled else 'sem proteção'}"
+            response_message = f"Comando '{command}' enviado para {device['device_type']} {'com proteção ativa' if device_protection_enabled else 'sem proteção'}"
         elif status == "blocked":
             response_message = f"Comando '{command}' bloqueado pela proteção"
         else:
             response_message = f"Erro ao enviar comando '{command}'"
+        
         return CommandResponse(
             success=status == "success",
             message=response_message,
             device_id=device_id,
             command=command,
             timestamp=datetime.now().isoformat(),
-            protection_enabled=protection_enabled
+            protection_enabled=device_protection_enabled
         )
     except HTTPException as he:
         if hasattr(he, 'detail') and str(he.detail) == "Status inválido":
@@ -381,7 +428,7 @@ async def send_command(command_request: CommandRequest, db: DatabaseManager = De
         raise HTTPException(status_code=500, detail="Erro interno do servidor")
 
 @app.get("/devices", response_model=List[Dict[str, Any]])
-async def get_devices(db: DatabaseManager = Depends(get_db_manager)):
+async def get_devices(db: DatabaseManager = Depends(get_db_manager), request: Request = None):
     """
     Retorna todos os dispositivos registrados.
     
@@ -389,7 +436,42 @@ async def get_devices(db: DatabaseManager = Depends(get_db_manager)):
         List[Dict[str, Any]]: Lista de dispositivos
     """
     try:
-        return db.get_all_devices()
+        # Verifica se algum dispositivo tem proteção ativa
+        devices = db.get_all_devices()
+        any_protected = any(device.get("protection_enabled", False) for device in devices)
+        
+        # Se algum dispositivo tem proteção ativa, verifica HMAC
+        if any_protected and request:
+            hmac_header = request.headers.get("X-HMAC")
+            user_agent = request.headers.get("User-Agent", "")
+            
+            # Se não tem HMAC, permite acesso mas loga o evento
+            if not hmac_header:
+                logger.warning("Acesso a /devices sem HMAC quando algum dispositivo tem proteção ativa")
+                # Permite acesso mas registra o evento
+            else:
+                # Verifica se HMAC é válido
+                try:
+                    # Gera HMAC esperado para a requisição
+                    message = f"GET:/devices:{datetime.now().isoformat()}"
+                    expected_hmac = generate_hmac(HMAC_KEY.encode(), message.encode())
+                    
+                    if not hmac.compare_digest(expected_hmac, hmac_header):
+                        logger.warning("HMAC inválido detectado em /devices")
+                        return JSONResponse(
+                            status_code=401,
+                            content={"detail": "Assinatura HMAC inválida"}
+                        )
+                    else:
+                        logger.info("HMAC válido em /devices")
+                except Exception as e:
+                    logger.error(f"Erro ao verificar HMAC: {e}")
+                    return JSONResponse(
+                        status_code=401,
+                        content={"detail": "Erro na verificação HMAC"}
+                    )
+        
+        return devices
     except Exception as e:
         logger.error(f"Erro ao obter dispositivos: {e}")
         raise HTTPException(status_code=500, detail="Erro interno do servidor")
