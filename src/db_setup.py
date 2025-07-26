@@ -62,23 +62,44 @@ class DatabaseManager:
         try:
             cursor = self.conn.cursor()
             
-            # Tabela de dispositivos registrados (compatível com device_manager.py)
+            # Tabela de dispositivos registrados (compatível com device_manager.py + Bluetooth)
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS devices (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     device_type TEXT NOT NULL,
-                    ip_address TEXT NOT NULL UNIQUE,
+                    ip_address TEXT UNIQUE,
+                    mac_address TEXT UNIQUE,
+                    connection_type TEXT NOT NULL DEFAULT 'wifi',
+                    device_name TEXT,
                     registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    protection_enabled BOOLEAN DEFAULT 1
+                    protection_enabled BOOLEAN DEFAULT 1,
+                    is_connected BOOLEAN DEFAULT 0,
+                    last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    CHECK (connection_type IN ('wifi', 'bluetooth')),
+                    CHECK ((connection_type = 'wifi' AND ip_address IS NOT NULL) OR 
+                           (connection_type = 'bluetooth' AND mac_address IS NOT NULL))
                 )
             ''')
             
-            # Adicionar coluna protection_enabled se não existir (para compatibilidade)
-            try:
-                cursor.execute("ALTER TABLE devices ADD COLUMN protection_enabled BOOLEAN DEFAULT 1")
-            except sqlite3.OperationalError:
-                # Coluna já existe, ignorar erro
-                pass
+            # Adicionar colunas Bluetooth se não existirem (para compatibilidade)
+            bluetooth_columns = [
+                ("mac_address", "TEXT UNIQUE"),
+                ("connection_type", "TEXT NOT NULL DEFAULT 'wifi'"),
+                ("device_name", "TEXT"),
+                ("protection_enabled", "BOOLEAN DEFAULT 1"),
+                ("is_connected", "BOOLEAN DEFAULT 0"),
+                ("last_seen", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+            ]
+            
+            for column_name, column_definition in bluetooth_columns:
+                try:
+                    cursor.execute(f"ALTER TABLE devices ADD COLUMN {column_name} {column_definition}")
+                except sqlite3.OperationalError:
+                    # Coluna já existe, ignorar erro
+                    pass
+            
+            # Atualizar constraint para permitir ip_address NULL para dispositivos Bluetooth
+            # SQLite não suporta ALTER CONSTRAINT, então vamos garantir via validação no código
             
             # Tabela de logs de comandos (nova funcionalidade da Camada 3)
             cursor.execute('''
@@ -168,7 +189,9 @@ class DatabaseManager:
         try:
             cursor = self.conn.cursor()
             cursor.execute(
-                "SELECT id, device_type, ip_address, registered_at, protection_enabled FROM devices WHERE id = ?",
+                """SELECT id, device_type, ip_address, mac_address, device_name, 
+                          connection_type, is_connected, last_seen, registered_at, protection_enabled 
+                   FROM devices WHERE id = ?""",
                 (device_id,)
             )
             row = cursor.fetchone()
@@ -178,8 +201,13 @@ class DatabaseManager:
                     "id": row[0],
                     "device_type": row[1],
                     "ip_address": row[2],
-                    "registered_at": row[3],
-                    "protection_enabled": bool(row[4]) if row[4] is not None else True
+                    "mac_address": row[3],
+                    "device_name": row[4],
+                    "connection_type": row[5],
+                    "is_connected": bool(row[6]) if row[6] is not None else False,
+                    "last_seen": row[7],
+                    "registered_at": row[8],
+                    "protection_enabled": bool(row[9]) if row[9] is not None else True
                 }
             return None
                 
@@ -461,6 +489,182 @@ class DatabaseManager:
                 
         except sqlite3.Error as e:
             logger.error(f"Erro ao alternar proteção do dispositivo {device_id}: {e}")
+            raise
+
+    # ===== MÉTODOS ESPECÍFICOS PARA BLUETOOTH =====
+    
+    def insert_bluetooth_device(self, device_type: str, mac_address: str, device_name: Optional[str] = None) -> int:
+        """
+        Insere um novo dispositivo Bluetooth na tabela devices.
+        
+        Args:
+            device_type (str): Tipo do dispositivo (ex: "lâmpada", "sensor", "speaker")
+            mac_address (str): Endereço MAC do dispositivo Bluetooth
+            device_name (Optional[str]): Nome do dispositivo (opcional)
+            
+        Returns:
+            int: ID do dispositivo inserido
+            
+        Raises:
+            sqlite3.IntegrityError: Se o MAC address já estiver registrado
+        """
+        if not device_type or not mac_address:
+            logger.error("Campos obrigatórios para dispositivo Bluetooth não informados")
+            raise ValueError("Campos obrigatórios: device_type e mac_address")
+            
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                """INSERT INTO devices (device_type, mac_address, connection_type, device_name, is_connected, last_seen) 
+                   VALUES (?, ?, 'bluetooth', ?, 0, CURRENT_TIMESTAMP)""",
+                (device_type, mac_address, device_name)
+            )
+            self.conn.commit()
+            device_id = cursor.lastrowid
+            logger.info(f"Dispositivo Bluetooth registrado: {device_type} - {mac_address} (ID: {device_id})")
+            return device_id
+                
+        except sqlite3.IntegrityError:
+            logger.warning(f"MAC address {mac_address} já está registrado")
+            raise
+        except sqlite3.Error as e:
+            logger.error(f"Erro ao inserir dispositivo Bluetooth: {e}")
+            raise
+
+    def get_bluetooth_devices(self) -> List[Dict[str, Any]]:
+        """
+        Retorna todos os dispositivos Bluetooth registrados.
+        
+        Returns:
+            List[Dict[str, Any]]: Lista de dispositivos Bluetooth
+        """
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                """SELECT id, device_type, mac_address, device_name, registered_at, 
+                          protection_enabled, is_connected, last_seen 
+                   FROM devices WHERE connection_type = 'bluetooth' ORDER BY registered_at DESC"""
+            )
+            rows = cursor.fetchall()
+            
+            devices = []
+            for row in rows:
+                device = {
+                    "id": row[0],
+                    "device_type": row[1],
+                    "mac_address": row[2],
+                    "device_name": row[3],
+                    "registered_at": row[4],
+                    "protection_enabled": bool(row[5]),
+                    "is_connected": bool(row[6]),
+                    "last_seen": row[7],
+                    "connection_type": "bluetooth"
+                }
+                devices.append(device)
+            
+            return devices
+                
+        except sqlite3.Error as e:
+            logger.error(f"Erro ao buscar dispositivos Bluetooth: {e}")
+            raise
+
+    def get_device_by_mac(self, mac_address: str) -> Optional[Dict[str, Any]]:
+        """
+        Busca um dispositivo pelo endereço MAC.
+        
+        Args:
+            mac_address (str): Endereço MAC do dispositivo
+            
+        Returns:
+            Optional[Dict[str, Any]]: Dados do dispositivo ou None se não encontrado
+        """
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                """SELECT id, device_type, mac_address, device_name, registered_at, 
+                          protection_enabled, is_connected, last_seen, connection_type
+                   FROM devices WHERE mac_address = ?""",
+                (mac_address,)
+            )
+            row = cursor.fetchone()
+            
+            if row:
+                return {
+                    "id": row[0],
+                    "device_type": row[1],
+                    "mac_address": row[2],
+                    "device_name": row[3],
+                    "registered_at": row[4],
+                    "protection_enabled": bool(row[5]),
+                    "is_connected": bool(row[6]),
+                    "last_seen": row[7],
+                    "connection_type": row[8]
+                }
+            return None
+                
+        except sqlite3.Error as e:
+            logger.error(f"Erro ao buscar dispositivo por MAC: {e}")
+            raise
+
+    def update_device_connection_status(self, device_id: int, is_connected: bool) -> None:
+        """
+        Atualiza o status de conexão de um dispositivo.
+        
+        Args:
+            device_id (int): ID do dispositivo
+            is_connected (bool): Status da conexão
+        """
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                "UPDATE devices SET is_connected = ?, last_seen = CURRENT_TIMESTAMP WHERE id = ?",
+                (1 if is_connected else 0, device_id)
+            )
+            self.conn.commit()
+            
+            status = "conectado" if is_connected else "desconectado"
+            logger.info(f"Dispositivo {device_id} {status}")
+                
+        except sqlite3.Error as e:
+            logger.error(f"Erro ao atualizar status de conexão do dispositivo {device_id}: {e}")
+            raise
+
+    def get_connected_bluetooth_devices(self) -> List[Dict[str, Any]]:
+        """
+        Retorna todos os dispositivos Bluetooth atualmente conectados.
+        
+        Returns:
+            List[Dict[str, Any]]: Lista de dispositivos Bluetooth conectados
+        """
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                """SELECT id, device_type, mac_address, device_name, registered_at, 
+                          protection_enabled, is_connected, last_seen 
+                   FROM devices WHERE connection_type = 'bluetooth' AND is_connected = 1
+                   ORDER BY last_seen DESC"""
+            )
+            rows = cursor.fetchall()
+            
+            devices = []
+            for row in rows:
+                device = {
+                    "id": row[0],
+                    "device_type": row[1],
+                    "mac_address": row[2],
+                    "device_name": row[3],
+                    "registered_at": row[4],
+                    "protection_enabled": bool(row[5]),
+                    "is_connected": bool(row[6]),
+                    "last_seen": row[7],
+                    "connection_type": "bluetooth"
+                }
+                devices.append(device)
+            
+            return devices
+                
+        except sqlite3.Error as e:
+            logger.error(f"Erro ao buscar dispositivos Bluetooth conectados: {e}")
             raise
 
 # Instância global do gerenciador de banco

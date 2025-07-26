@@ -8,7 +8,9 @@ python-jose[cryptography]
 pydantic
 python-dotenv
 pyjwt
+bleak>=0.20.0
 
 # Dependências universais para ambiente moderno.
 # Recomenda-se usar 'pip install -r requirements.txt' para baixar as versões mais recentes compatíveis.
 # Se necessário, ajuste versões conforme seu ambiente (ex: python 3.8+).
+# bleak: Biblioteca para comunicação Bluetooth Low Energy (BLE) e Bluetooth clássico

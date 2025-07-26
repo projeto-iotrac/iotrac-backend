@@ -6,6 +6,7 @@
 import os
 import json
 import logging
+import sqlite3
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 
@@ -122,7 +123,7 @@ class ToggleResponse(BaseModel):
     timestamp: str
 
 class DeviceRegister(BaseModel):
-    """Modelo para registro de dispositivo."""
+    """Modelo para registro de dispositivo WiFi."""
     device_type: str = Field(..., description="Tipo do dispositivo")
     ip_address: str = Field(..., description="Endereço IP do dispositivo")
 
@@ -143,6 +144,66 @@ class DeviceRegister(BaseModel):
         if not re.match(ip_pattern, v):
             raise ValueError("Endereço IP inválido")
         return v
+
+class BluetoothDeviceRegister(BaseModel):
+    """Modelo para registro de dispositivo Bluetooth."""
+    device_type: str = Field(..., description="Tipo do dispositivo")
+    mac_address: str = Field(..., description="Endereço MAC do dispositivo Bluetooth")
+    device_name: Optional[str] = Field(None, description="Nome do dispositivo (opcional)")
+
+    @field_validator('device_type')
+    @staticmethod
+    def validate_device_type(v):
+        allowed_types = ["smart-lamp", "smart-lock", "sensor", "speaker", 
+                        "headphones", "keyboard", "mouse", "smart-watch", "fitness-tracker"]
+        if v not in allowed_types:
+            raise ValueError(f"Tipo de dispositivo Bluetooth '{v}' não é permitido. Tipos válidos: {allowed_types}")
+        return v
+
+    @field_validator('mac_address')
+    @staticmethod
+    def validate_mac(v):
+        import re
+        # Formato MAC: XX:XX:XX:XX:XX:XX ou XX-XX-XX-XX-XX-XX
+        mac_pattern = r'^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$'
+        if not re.match(mac_pattern, v):
+            raise ValueError("Endereço MAC inválido. Use formato XX:XX:XX:XX:XX:XX ou XX-XX-XX-XX-XX-XX")
+        return v.upper().replace('-', ':')  # Normalizar para formato com ':'
+
+class BluetoothCommandRequest(BaseModel):
+    """Modelo para requisição de comando Bluetooth."""
+    device_id: int = Field(..., description="ID do dispositivo")
+    command: str = Field(..., min_length=1, description="Comando a ser executado")
+
+    @field_validator('command')
+    @staticmethod
+    def validate_command(v, info):
+        allowed_commands = [
+            "turn_on", "turn_off", "set_brightness", "set_color", "get_status",
+            "play", "pause", "volume_up", "volume_down", "next_track", "previous_track",
+            "lock", "unlock", "get_battery", "sync_time", "get_data"
+        ]
+        if v not in allowed_commands:
+            raise ValueError(f"Comando Bluetooth '{v}' não é permitido. Comandos válidos: {allowed_commands}")
+        return v
+
+class BluetoothScanRequest(BaseModel):
+    """Modelo para requisição de escaneamento Bluetooth."""
+    timeout: Optional[float] = Field(10.0, ge=1.0, le=60.0, description="Tempo limite para escaneamento (1-60 segundos)")
+
+class BluetoothConnectionRequest(BaseModel):
+    """Modelo para requisição de conexão Bluetooth."""
+    mac_address: str = Field(..., description="Endereço MAC do dispositivo")
+    timeout: Optional[float] = Field(10.0, ge=5.0, le=30.0, description="Tempo limite para conexão (5-30 segundos)")
+
+    @field_validator('mac_address')
+    @staticmethod
+    def validate_mac(v):
+        import re
+        mac_pattern = r'^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$'
+        if not re.match(mac_pattern, v):
+            raise ValueError("Endereço MAC inválido")
+        return v.upper().replace('-', ':')
 
 # Funções auxiliares
 
@@ -175,9 +236,9 @@ def encrypt_command(command: str) -> Dict[str, str]:
         logger.error(f"Falha na criptografia do comando: {e}")
         raise HTTPException(status_code=500, detail=f"Falha na criptografia do comando: {e}")
 
-def send_command_to_device(device: Dict[str, Any], command: str, protection_enabled: bool) -> str:
+async def send_command_to_device(device: Dict[str, Any], command: str, protection_enabled: bool) -> str:
     """
-    Envia comando para dispositivo usando o interceptor apropriado.
+    Envia comando para dispositivo usando o interceptor apropriado (WiFi ou Bluetooth).
     
     Args:
         device (Dict[str, Any]): Dados do dispositivo
@@ -185,41 +246,72 @@ def send_command_to_device(device: Dict[str, Any], command: str, protection_enab
         protection_enabled (bool): Se a proteção está ativa
         
     Returns:
-        str: Status do envio ("success", "blocked", "error")
+        str: Status do envio ("success", "blocked", "error", "not_connected")
     """
-    if not isinstance(device, dict) or "device_type" not in device or "ip_address" not in device:
+    if not isinstance(device, dict) or "device_type" not in device:
         logger.error(f"Dados do dispositivo incompletos: {device}")
         raise ValueError("Dados do dispositivo incompletos")
+    
     try:
         device_type = device["device_type"]
-        ip_address = device["ip_address"]
-        if device_type == "drone":
-            port = 5000
-            message = command
+        connection_type = device.get("connection_type", "wifi")
+        
+        # Determinar se é dispositivo Bluetooth ou WiFi
+        if connection_type == "bluetooth":
+            # Envio via Bluetooth
+            if "mac_address" not in device:
+                logger.error(f"MAC address não encontrado para dispositivo Bluetooth: {device}")
+                raise ValueError("MAC address obrigatório para dispositivos Bluetooth")
+            
+            from src.bluetooth_interceptor import send_bluetooth_command
+            
+            mac_address = device["mac_address"]
+            encrypted_data = None
+            
             if protection_enabled:
                 encrypted_data = encrypt_command(command)
-                message = json.dumps(encrypted_data)
-            send_udp(ip_address, port, message)
-            logger.info(f"Comando enviado para drone {ip_address}: {command}")
-            return "success"
-        elif device_type == "veículo":
-            port = 5001
-            message = command
-            if protection_enabled:
-                encrypted_data = encrypt_command(command)
-                message = json.dumps(encrypted_data)
-            send_tcp(ip_address, port, message)
-            logger.info(f"Comando enviado para veículo {ip_address}: {command}")
-            return "success"
+                logger.info(f"Enviando comando criptografado via Bluetooth para {mac_address}")
+            else:
+                logger.info(f"Enviando comando não criptografado via Bluetooth para {mac_address}: {command}")
+            
+            status = await send_bluetooth_command(mac_address, command, encrypted_data)
+            return status
+            
         else:
-            port = 5002
-            message = command
-            if protection_enabled:
-                encrypted_data = encrypt_command(command)
-                message = json.dumps(encrypted_data)
-            send_tcp(ip_address, port, message)
-            logger.info(f"Comando enviado para {device_type} {ip_address}: {command}")
-            return "success"
+            # Envio via WiFi (comportamento original)
+            if "ip_address" not in device:
+                logger.error(f"IP address não encontrado para dispositivo WiFi: {device}")
+                raise ValueError("IP address obrigatório para dispositivos WiFi")
+            
+            ip_address = device["ip_address"]
+            
+            if device_type == "drone":
+                port = 5000
+                message = command
+                if protection_enabled:
+                    encrypted_data = encrypt_command(command)
+                    message = json.dumps(encrypted_data)
+                send_udp(ip_address, port, message)
+                logger.info(f"Comando enviado para drone {ip_address}: {command}")
+                return "success"
+            elif device_type == "veículo":
+                port = 5001
+                message = command
+                if protection_enabled:
+                    encrypted_data = encrypt_command(command)
+                    message = json.dumps(encrypted_data)
+                send_tcp(ip_address, port, message)
+                logger.info(f"Comando enviado para veículo {ip_address}: {command}")
+                return "success"
+            else:
+                port = 5002
+                message = command
+                if protection_enabled:
+                    encrypted_data = encrypt_command(command)
+                    message = json.dumps(encrypted_data)
+                send_tcp(ip_address, port, message)
+                logger.info(f"Comando enviado para {device_type} {ip_address}: {command}")
+                return "success"
     except ValueError as ve:
         logger.error(f"Erro de validação ao enviar comando: {ve}")
         if str(ve) == "Dados do dispositivo incompletos":
@@ -383,7 +475,7 @@ async def send_command(command_request: CommandRequest, db: DatabaseManager = De
                 )
         
         try:
-            status = send_command_to_device(device, command, device_protection_enabled)
+            status = await send_command_to_device(device, command, device_protection_enabled)
         except HTTPException as he:
             raise he
         except ValueError as ve:
@@ -658,22 +750,325 @@ async def global_exception_handler(request, exc):
         content={"detail": "Erro interno do servidor"}
     )
 
+# ===== ENDPOINTS ESPECÍFICOS PARA BLUETOOTH =====
+
+@app.post("/bluetooth/scan", response_model=Dict[str, Any])
+async def scan_bluetooth_devices(scan_request: BluetoothScanRequest = BluetoothScanRequest()):
+    """
+    Escaneia dispositivos Bluetooth disponíveis.
+    
+    Args:
+        scan_request (BluetoothScanRequest): Parâmetros do escaneamento
+        
+    Returns:
+        Dict[str, Any]: Lista de dispositivos encontrados
+    """
+    try:
+        from src.bluetooth_interceptor import scan_bluetooth_devices
+        
+        logger.info(f"Iniciando escaneamento Bluetooth (timeout: {scan_request.timeout}s)")
+        
+        devices = await scan_bluetooth_devices(scan_request.timeout)
+        
+        return {
+            "success": True,
+            "message": f"{len(devices)} dispositivos Bluetooth encontrados",
+            "devices": devices,
+            "scan_timeout": scan_request.timeout,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except RuntimeError as e:
+        if "Bluetooth não disponível" in str(e):
+            raise HTTPException(status_code=503, detail="Bluetooth não disponível no sistema")
+        raise HTTPException(status_code=500, detail=f"Erro no escaneamento Bluetooth: {e}")
+    except Exception as e:
+        logger.error(f"Erro inesperado no escaneamento Bluetooth: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro inesperado: {e}")
+
+@app.post("/bluetooth/connect", response_model=Dict[str, Any])
+async def connect_bluetooth_device(connection_request: BluetoothConnectionRequest):
+    """
+    Conecta a um dispositivo Bluetooth específico.
+    
+    Args:
+        connection_request (BluetoothConnectionRequest): Dados da conexão
+        
+    Returns:
+        Dict[str, Any]: Resultado da conexão
+    """
+    try:
+        from src.bluetooth_interceptor import connect_bluetooth_device
+        
+        mac_address = connection_request.mac_address
+        timeout = connection_request.timeout
+        
+        logger.info(f"Tentando conectar ao dispositivo Bluetooth {mac_address}")
+        
+        success = await connect_bluetooth_device(mac_address)
+        
+        if success:
+            # Atualizar status no banco de dados se dispositivo já registrado
+            db = get_db_manager()
+            device = db.get_device_by_mac(mac_address)
+            if device:
+                db.update_device_connection_status(device["id"], True)
+            
+            return {
+                "success": True,
+                "message": f"Conectado com sucesso ao dispositivo {mac_address}",
+                "mac_address": mac_address,
+                "timestamp": datetime.now().isoformat()
+            }
+        else:
+            return {
+                "success": False,
+                "message": f"Falha na conexão com {mac_address}",
+                "mac_address": mac_address,
+                "timestamp": datetime.now().isoformat()
+            }
+            
+    except RuntimeError as e:
+        if "Bluetooth não disponível" in str(e):
+            raise HTTPException(status_code=503, detail="Bluetooth não disponível no sistema")
+        raise HTTPException(status_code=500, detail=f"Erro na conexão Bluetooth: {e}")
+    except Exception as e:
+        logger.error(f"Erro inesperado na conexão Bluetooth: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro inesperado: {e}")
+
+@app.post("/bluetooth/disconnect/{mac_address}", response_model=Dict[str, Any])
+async def disconnect_bluetooth_device(mac_address: str):
+    """
+    Desconecta de um dispositivo Bluetooth específico.
+    
+    Args:
+        mac_address (str): Endereço MAC do dispositivo
+        
+    Returns:
+        Dict[str, Any]: Resultado da desconexão
+    """
+    try:
+        from src.bluetooth_interceptor import disconnect_bluetooth_device
+        
+        logger.info(f"Desconectando do dispositivo Bluetooth {mac_address}")
+        
+        success = await disconnect_bluetooth_device(mac_address)
+        
+        if success:
+            # Atualizar status no banco de dados
+            db = get_db_manager()
+            device = db.get_device_by_mac(mac_address)
+            if device:
+                db.update_device_connection_status(device["id"], False)
+            
+            return {
+                "success": True,
+                "message": f"Desconectado com sucesso do dispositivo {mac_address}",
+                "mac_address": mac_address,
+                "timestamp": datetime.now().isoformat()
+            }
+        else:
+            return {
+                "success": False,
+                "message": f"Dispositivo {mac_address} não estava conectado",
+                "mac_address": mac_address,
+                "timestamp": datetime.now().isoformat()
+            }
+            
+    except RuntimeError as e:
+        if "Bluetooth não disponível" in str(e):
+            raise HTTPException(status_code=503, detail="Bluetooth não disponível no sistema")
+        raise HTTPException(status_code=500, detail=f"Erro na desconexão Bluetooth: {e}")
+    except Exception as e:
+        logger.error(f"Erro inesperado na desconexão Bluetooth: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro inesperado: {e}")
+
+@app.post("/bluetooth/device/register", response_model=Dict[str, Any])
+async def register_bluetooth_device(device: BluetoothDeviceRegister, db: DatabaseManager = Depends(get_db_manager)):
+    """
+    Registra um novo dispositivo Bluetooth.
+    
+    Args:
+        device (BluetoothDeviceRegister): Dados do dispositivo Bluetooth
+        
+    Returns:
+        Dict[str, Any]: Dados do dispositivo registrado
+    """
+    try:
+        logger.info(f"Tentando registrar dispositivo Bluetooth: {device.dict()}")
+        
+        # Verificar se o MAC já está registrado
+        existing_device = db.get_device_by_mac(device.mac_address)
+        if existing_device:
+            logger.warning(f"MAC {device.mac_address} já está registrado")
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Dispositivo já registrado com este MAC: {device.mac_address}"
+            )
+        
+        device_id = db.insert_bluetooth_device(
+            device.device_type, 
+            device.mac_address, 
+            device.device_name
+        )
+        
+        device_data = {
+            "id": device_id,
+            "device_type": device.device_type,
+            "mac_address": device.mac_address,
+            "device_name": device.device_name,
+            "connection_type": "bluetooth",
+            "registered_at": datetime.now().isoformat(),
+            "protection_enabled": True,
+            "is_connected": False
+        }
+        
+        logger.info(f"Dispositivo Bluetooth registrado com sucesso: {device_data}")
+        return device_data
+        
+    except HTTPException:
+        raise
+    except sqlite3.IntegrityError:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"MAC address {device.mac_address} já está registrado"
+        )
+    except Exception as e:
+        logger.error(f"Erro inesperado ao registrar dispositivo Bluetooth: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erro inesperado: {str(e)}")
+
+@app.get("/bluetooth/devices", response_model=List[Dict[str, Any]])
+async def get_bluetooth_devices(db: DatabaseManager = Depends(get_db_manager)):
+    """
+    Lista todos os dispositivos Bluetooth registrados.
+    
+    Returns:
+        List[Dict[str, Any]]: Lista de dispositivos Bluetooth
+    """
+    try:
+        devices = db.get_bluetooth_devices()
+        logger.info(f"Retornando {len(devices)} dispositivos Bluetooth")
+        return devices
+        
+    except Exception as e:
+        logger.error(f"Erro ao buscar dispositivos Bluetooth: {e}")
+        raise HTTPException(status_code=500, detail="Erro interno do servidor")
+
+@app.get("/bluetooth/devices/connected", response_model=List[Dict[str, Any]])
+async def get_connected_bluetooth_devices(db: DatabaseManager = Depends(get_db_manager)):
+    """
+    Lista todos os dispositivos Bluetooth atualmente conectados.
+    
+    Returns:
+        List[Dict[str, Any]]: Lista de dispositivos Bluetooth conectados
+    """
+    try:
+        devices = db.get_connected_bluetooth_devices()
+        logger.info(f"Retornando {len(devices)} dispositivos Bluetooth conectados")
+        return devices
+        
+    except Exception as e:
+        logger.error(f"Erro ao buscar dispositivos Bluetooth conectados: {e}")
+        raise HTTPException(status_code=500, detail="Erro interno do servidor")
+
+@app.post("/bluetooth/command", response_model=CommandResponse)
+async def send_bluetooth_command(command_request: BluetoothCommandRequest, db: DatabaseManager = Depends(get_db_manager)):
+    """
+    Envia comando para dispositivo Bluetooth.
+    
+    Args:
+        command_request (BluetoothCommandRequest): Dados do comando
+        
+    Returns:
+        CommandResponse: Resultado do processamento do comando
+    """
+    try:
+        device_id = command_request.device_id
+        command = command_request.command
+        
+        # Busca o dispositivo
+        device = db.get_device(device_id)
+        if not device:
+            db.insert_log(device_id, command, "device_not_found")
+            raise HTTPException(status_code=404, detail=f"Dispositivo com ID {device_id} não encontrado")
+        
+        # Verificar se é dispositivo Bluetooth
+        if device.get("connection_type") != "bluetooth":
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Dispositivo {device_id} não é um dispositivo Bluetooth"
+            )
+        
+        # Verificar se dispositivo está conectado
+        if not device.get("is_connected", False):
+            db.insert_log(device_id, command, "not_connected")
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Dispositivo Bluetooth {device_id} não está conectado"
+            )
+        
+        device_protection_enabled = device.get("protection_enabled", False)
+        
+        try:
+            status = await send_command_to_device(device, command, device_protection_enabled)
+        except Exception as e:
+            logger.error(f"Erro ao enviar comando Bluetooth: {e}")
+            status = "error"
+        
+        # Registrar log
+        try:
+            db.insert_log(device_id, command, status)
+        except Exception as log_error:
+            logger.error(f"Erro ao inserir log: {log_error}")
+        
+        if status == "success":
+            response_message = f"Comando '{command}' enviado via Bluetooth para {device['device_type']} {'com proteção ativa' if device_protection_enabled else 'sem proteção'}"
+        elif status == "not_connected":
+            response_message = f"Dispositivo Bluetooth não conectado"
+        else:
+            response_message = f"Erro ao enviar comando Bluetooth '{command}'"
+        
+        return CommandResponse(
+            success=status == "success",
+            message=response_message,
+            device_id=device_id,
+            command=command,
+            timestamp=datetime.now().isoformat(),
+            protection_enabled=device_protection_enabled
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao processar comando Bluetooth: {e}")
+        raise HTTPException(status_code=500, detail="Erro interno do servidor")
+
 if __name__ == "__main__":
     import uvicorn
     
     logger.info(f"Iniciando servidor IOTRAC na porta {SERVER_PORT}")
     logger.info(f"Host: {SERVER_HOST}")
     logger.info("Endpoints disponíveis:")
+    logger.info("=== ENDPOINTS GERAIS ===")
     logger.info("  GET  /status - Status da proteção")
     logger.info("  POST /toggle_protection - Alternar proteção")
     logger.info("  GET  /logs - Logs de comandos")
     logger.info("  POST /command - Enviar comando")
+    logger.info("=== ENDPOINTS WIFI ===")
     logger.info("  GET  /devices - Listar dispositivos")
     logger.info("  GET  /devices/{device_id} - Detalhes do dispositivo")
-    logger.info("  POST /device/register - Registrar dispositivo")
+    logger.info("  POST /device/register - Registrar dispositivo WiFi")
     logger.info("  DELETE /devices/{device_id} - Remover dispositivo")
     logger.info("  GET  /devices/{device_id}/protection - Status de proteção do dispositivo")
     logger.info("  POST /devices/{device_id}/protection/toggle - Alternar proteção do dispositivo")
+    logger.info("=== ENDPOINTS BLUETOOTH ===")
+    logger.info("  POST /bluetooth/scan - Escanear dispositivos Bluetooth")
+    logger.info("  POST /bluetooth/connect - Conectar dispositivo Bluetooth")
+    logger.info("  POST /bluetooth/disconnect/{mac_address} - Desconectar dispositivo Bluetooth")
+    logger.info("  POST /bluetooth/device/register - Registrar dispositivo Bluetooth")
+    logger.info("  GET  /bluetooth/devices - Listar dispositivos Bluetooth")
+    logger.info("  GET  /bluetooth/devices/connected - Listar dispositivos Bluetooth conectados")
+    logger.info("  POST /bluetooth/command - Enviar comando Bluetooth")
     
     uvicorn.run(
         "main:app",
