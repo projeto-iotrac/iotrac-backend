@@ -14,7 +14,9 @@ import os
 DB_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'database', 'iotrac.db'))
 
 # Inicializa o app FastAPI
-app = FastAPI(title="IoT Protection App")
+# NOTA: Este app foi desabilitado para evitar conflito com main.py
+# Os endpoints de dispositivos agora estão integrados no main.py
+# app = FastAPI(title="IoT Protection App")
 
 # Define o modelo de dados para registro de dispositivo
 class DeviceRegister(BaseModel):
@@ -66,7 +68,8 @@ def init_db():
 init_db()
 
 # Endpoint para registrar um novo dispositivo IoT
-@app.post("/device/register", response_model=DeviceOut)
+# DESABILITADO: Integrado no main.py
+# @app.post("/device/register", response_model=DeviceOut)
 def register_device(device: DeviceRegister):
     """Registra um novo dispositivo no banco de dados"""
     # Garante que o banco está inicializado
@@ -93,7 +96,8 @@ def register_device(device: DeviceRegister):
     return DeviceOut(id=device_id, device_type=device.device_type, ip_address=device.ip_address)
 
 # Endpoint para listar todos os dispositivos registrados
-@app.get("/devices", response_model=List[DeviceOut])
+# DESABILITADO: Integrado no main.py
+# @app.get("/devices", response_model=List[DeviceOut])
 def list_devices():
     """Lista todos os dispositivos registrados"""
     # Garante que o banco está inicializado
@@ -108,7 +112,8 @@ def list_devices():
     return [DeviceOut(id=row[0], device_type=row[1], ip_address=row[2]) for row in rows]
 
 # Endpoint para deletar dispositivo por Id
-@app.delete("/device/{device_id}", response_model=DeviceOut)
+# DESABILITADO: Integrado no main.py
+# @app.delete("/device/{device_id}", response_model=DeviceOut)
 def delete_device_by_id(device_id: int):
     """Exclui um dispositivo pelo ID"""
     init_db()

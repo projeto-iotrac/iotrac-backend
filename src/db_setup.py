@@ -47,11 +47,25 @@ class DatabaseManager:
     def get_connection(self) -> sqlite3.Connection:
         """
         Cria e retorna uma conexão com o banco de dados.
+        Habilita WAL mode para melhor performance e concorrência.
         
         Returns:
             sqlite3.Connection: Conexão com o banco SQLite
         """
-        return sqlite3.connect(self.db_path, check_same_thread=False)
+        conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        
+        # Habilitar WAL mode para melhor performance
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA cache_size=10000")
+            conn.execute("PRAGMA temp_store=memory")
+            conn.commit()
+            logger.debug("WAL mode habilitado no SQLite")
+        except Exception as e:
+            logger.warning(f"Erro ao configurar WAL mode: {e}")
+        
+        return conn
     
     def init_database(self) -> None:
         """
@@ -666,6 +680,77 @@ class DatabaseManager:
         except sqlite3.Error as e:
             logger.error(f"Erro ao buscar dispositivos Bluetooth conectados: {e}")
             raise
+    
+    def cleanup_old_logs(self, retention_days: int = 30) -> int:
+        """
+        Remove logs antigos do banco de dados.
+        
+        Args:
+            retention_days (int): Dias de retenção (padrão: 30)
+            
+        Returns:
+            int: Número de logs removidos
+        """
+        try:
+            cursor = self.conn.cursor()
+            cutoff_date = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            cutoff_date = cutoff_date.replace(day=cutoff_date.day - retention_days)
+            cutoff_str = cutoff_date.isoformat()
+            
+            # Limpar device_logs
+            cursor.execute("SELECT COUNT(*) FROM device_logs WHERE timestamp < ?", (cutoff_str,))
+            device_logs_count = cursor.fetchone()[0]
+            cursor.execute("DELETE FROM device_logs WHERE timestamp < ?", (cutoff_str,))
+            
+            # Limpar simple_logs (se existir)
+            try:
+                cursor.execute("SELECT COUNT(*) FROM simple_logs WHERE timestamp < ?", (cutoff_str,))
+                simple_logs_count = cursor.fetchone()[0]
+                cursor.execute("DELETE FROM simple_logs WHERE timestamp < ?", (cutoff_str,))
+            except sqlite3.OperationalError:
+                simple_logs_count = 0
+            
+            # Limpar advanced_logs (se existir)
+            try:
+                cursor.execute("SELECT COUNT(*) FROM advanced_logs WHERE timestamp < ?", (cutoff_str,))
+                advanced_logs_count = cursor.fetchone()[0]
+                cursor.execute("DELETE FROM advanced_logs WHERE timestamp < ?", (cutoff_str,))
+            except sqlite3.OperationalError:
+                advanced_logs_count = 0
+            
+            # Limpar security_events resolvidos (se existir)
+            try:
+                cursor.execute(
+                    "SELECT COUNT(*) FROM security_events WHERE timestamp < ? AND resolved = 1", 
+                    (cutoff_str,)
+                )
+                security_events_count = cursor.fetchone()[0]
+                cursor.execute(
+                    "DELETE FROM security_events WHERE timestamp < ? AND resolved = 1", 
+                    (cutoff_str,)
+                )
+            except sqlite3.OperationalError:
+                security_events_count = 0
+            
+            self.conn.commit()
+            
+            total_removed = device_logs_count + simple_logs_count + advanced_logs_count + security_events_count
+            
+            if total_removed > 0:
+                logger.info(f"Limpeza de logs concluída: {total_removed} registros removidos "
+                           f"(device_logs: {device_logs_count}, simple_logs: {simple_logs_count}, "
+                           f"advanced_logs: {advanced_logs_count}, security_events: {security_events_count})")
+            
+            # Executar VACUUM para recuperar espaço
+            if total_removed > 100:
+                cursor.execute("VACUUM")
+                logger.info("VACUUM executado para recuperar espaço em disco")
+            
+            return total_removed
+            
+        except sqlite3.Error as e:
+            logger.error(f"Erro ao limpar logs antigos: {e}")
+            raise
 
 # Instância global do gerenciador de banco
 db_manager = DatabaseManager()
@@ -686,6 +771,10 @@ def get_device_by_id(device_id: int) -> Optional[Dict[str, Any]]:
 def get_protection_enabled() -> bool:
     """Retorna o status da proteção."""
     return db_manager.get_protection_status()
+
+def cleanup_old_logs(retention_days: int = 30) -> int:
+    """Remove logs antigos do banco de dados."""
+    return db_manager.cleanup_old_logs(retention_days)
 
 if __name__ == "__main__":
     # Teste da inicialização do banco

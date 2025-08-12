@@ -26,7 +26,12 @@ from jose import jwt, ExpiredSignatureError, JWTError
 from src.config import setup_logging
 
 # Carregar variáveis de ambiente
-load_dotenv()
+from pathlib import Path
+
+# Obter o diretório do arquivo atual e carregar .env
+current_dir = Path(__file__).parent
+config_path = current_dir.parent / "config" / ".env"
+load_dotenv(str(config_path))
 
 # Cachear backend
 BACKEND = default_backend()

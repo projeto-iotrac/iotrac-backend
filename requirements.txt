@@ -9,8 +9,14 @@ pydantic
 python-dotenv
 pyjwt
 bleak>=0.20.0
+bcrypt>=4.0.0
+requests>=2.28.0
+pyotp>=2.8.0
+qrcode>=7.4.0
 
 # Dependências universais para ambiente moderno.
 # Recomenda-se usar 'pip install -r requirements.txt' para baixar as versões mais recentes compatíveis.
 # Se necessário, ajuste versões conforme seu ambiente (ex: python 3.8+).
 # bleak: Biblioteca para comunicação Bluetooth Low Energy (BLE) e Bluetooth clássico
+# bcrypt: Para hash de senhas seguro
+# requests: Para chamadas HTTP (SMS APIs)
