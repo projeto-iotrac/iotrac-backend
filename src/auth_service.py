@@ -331,59 +331,124 @@ class AuthService:
             if not user:
                 raise HTTPException(status_code=404, detail="Usuário não encontrado")
             
-            # Gerar chave secreta
-            secret = pyotp.random_base32()
+            # Verificar se TOTP já está configurado
+            existing_secret = user.get("two_fa_secret")
+            if existing_secret and user.get("two_fa_enabled"):
+                # TOTP já configurado e ativado - retornar dados existentes
+                totp = pyotp.TOTP(existing_secret)
+                provisioning_uri = totp.provisioning_uri(
+                    name=user["email"],
+                    issuer_name="IOTRAC"
+                )
+                
+                # Gerar QR Code com secret existente
+                qr = qrcode.QRCode(version=1, box_size=10, border=5)
+                qr.add_data(provisioning_uri)
+                qr.make(fit=True)
+                
+                img = qr.make_image(fill_color="black", back_color="white")
+                buffer = io.BytesIO()
+                img.save(buffer, format='PNG')
+                buffer.seek(0)
+                qr_code_base64 = base64.b64encode(buffer.getvalue()).decode()
+                qr_code_url = f"data:image/png;base64,{qr_code_base64}"
+                
+                logger.info(f"TOTP já configurado para usuário {user_id} - retornando configuração existente")
+                
+                return {
+                    "secret": existing_secret,
+                    "qr_code_url": qr_code_url,
+                    "backup_codes": user.get("two_fa_backup_codes", "").split(",") if user.get("two_fa_backup_codes") else [],
+                    "app_name": "IOTRAC",
+                    "account_name": user["email"],
+                    "already_configured": True
+                }
             
-            # Criar URL para QR Code
-            totp = pyotp.TOTP(secret)
-            provisioning_uri = totp.provisioning_uri(
-                name=user["email"],
-                issuer_name="IOTRAC"
-            )
-            
-            # Gerar QR Code
-            qr = qrcode.QRCode(version=1, box_size=10, border=5)
-            qr.add_data(provisioning_uri)
-            qr.make(fit=True)
-            
-            # Converter QR Code para base64
-            img = qr.make_image(fill_color="black", back_color="white")
-            buffer = io.BytesIO()
-            img.save(buffer, format='PNG')
-            buffer.seek(0)
-            qr_code_base64 = base64.b64encode(buffer.getvalue()).decode()
-            qr_code_url = f"data:image/png;base64,{qr_code_base64}"
-            
-            # Gerar códigos de backup
-            backup_codes = [secrets.token_hex(4).upper() for _ in range(10)]
-            backup_codes_json = ",".join(backup_codes)
-            
-            # Salvar no banco de dados
-            cursor = self.db.conn.cursor()
-            cursor.execute('''
-                UPDATE users SET 
-                    two_fa_secret = ?,
-                    two_fa_backup_codes = ?,
-                    two_fa_enabled = 0
-                WHERE id = ?
-            ''', (secret, backup_codes_json, user_id))
-            self.db.conn.commit()
-            
-            # Log do evento
-            self.db.log_auth_event(
-                user_id, "totp_setup", True,
-                details="TOTP configurado - aguardando primeira verificação"
-            )
-            
-            logger.info(f"TOTP configurado para usuário {user_id}")
-            
-            return {
-                "secret": secret,
-                "qr_code_url": qr_code_url,
-                "backup_codes": backup_codes,
-                "app_name": "IOTRAC",
-                "account_name": user["email"]
-            }
+            # TOTP não configurado ou não ativado - gerar novo
+            if not existing_secret:
+                # Gerar chave secreta apenas se não existir
+                secret = pyotp.random_base32()
+                
+                # Criar URL para QR Code
+                totp = pyotp.TOTP(secret)
+                provisioning_uri = totp.provisioning_uri(
+                    name=user["email"],
+                    issuer_name="IOTRAC"
+                )
+                
+                # Gerar QR Code
+                qr = qrcode.QRCode(version=1, box_size=10, border=5)
+                qr.add_data(provisioning_uri)
+                qr.make(fit=True)
+                
+                # Converter QR Code para base64
+                img = qr.make_image(fill_color="black", back_color="white")
+                buffer = io.BytesIO()
+                img.save(buffer, format='PNG')
+                buffer.seek(0)
+                qr_code_base64 = base64.b64encode(buffer.getvalue()).decode()
+                qr_code_url = f"data:image/png;base64,{qr_code_base64}"
+                
+                # Gerar códigos de backup
+                backup_codes = [secrets.token_hex(4).upper() for _ in range(10)]
+                backup_codes_json = ",".join(backup_codes)
+                
+                # Salvar no banco de dados
+                cursor = self.db.conn.cursor()
+                cursor.execute('''
+                    UPDATE users SET 
+                        two_fa_secret = ?,
+                        two_fa_backup_codes = ?,
+                        two_fa_enabled = 0
+                    WHERE id = ?
+                ''', (secret, backup_codes_json, user_id))
+                self.db.conn.commit()
+                
+                # Log do evento
+                self.db.log_auth_event(
+                    user_id, "totp_setup", True,
+                    details="TOTP configurado - aguardando primeira verificação"
+                )
+                
+                logger.info(f"TOTP configurado para usuário {user_id}")
+                
+                return {
+                    "secret": secret,
+                    "qr_code_url": qr_code_url,
+                    "backup_codes": backup_codes,
+                    "app_name": "IOTRAC",
+                    "account_name": user["email"],
+                    "already_configured": False
+                }
+            else:
+                # Secret existe mas 2FA não ativado - retornar configuração para ativação
+                totp = pyotp.TOTP(existing_secret)
+                provisioning_uri = totp.provisioning_uri(
+                    name=user["email"],
+                    issuer_name="IOTRAC"
+                )
+                
+                qr = qrcode.QRCode(version=1, box_size=10, border=5)
+                qr.add_data(provisioning_uri)
+                qr.make(fit=True)
+                
+                img = qr.make_image(fill_color="black", back_color="white")
+                buffer = io.BytesIO()
+                img.save(buffer, format='PNG')
+                buffer.seek(0)
+                qr_code_base64 = base64.b64encode(buffer.getvalue()).decode()
+                qr_code_url = f"data:image/png;base64,{qr_code_base64}"
+                
+                logger.info(f"TOTP configurado mas não ativado para usuário {user_id} - retornando para ativação")
+                
+                return {
+                    "secret": existing_secret,
+                    "qr_code_url": qr_code_url,
+                    "backup_codes": user.get("two_fa_backup_codes", "").split(",") if user.get("two_fa_backup_codes") else [],
+                    "app_name": "IOTRAC",
+                    "account_name": user["email"],
+                    "already_configured": False
+                }
             
         except HTTPException:
             raise
@@ -574,6 +639,10 @@ class AuthService:
         }
         
         return self.jwt_auth.generate_token(payload, ACCESS_TOKEN_EXPIRE_MINUTES)
+    
+    def generate_refresh_token(self, user: Dict[str, Any]) -> str:
+        """Gera e retorna um refresh token persistido para o usuário."""
+        return self.db.create_refresh_token(user["id"])
     
     def verify_access_token(self, token: str) -> Dict[str, Any]:
         """

@@ -28,7 +28,9 @@ from src.auth_models import (
     LoginRequest, LoginResponse, TwoFARequest, TwoFAResponse,
     RegisterRequest, RegisterResponse, UserInfo, TokenResponse,
     TOTPSetupRequest, TOTPSetupResponse, TOTPVerifyRequest, TOTPVerifyResponse,
-    RefreshTokenRequest, DeviceRegistrationRequest, DeviceRegistrationResponse
+    RefreshTokenRequest, DeviceRegistrationRequest, DeviceRegistrationResponse,
+    EmailVerificationRequest, EmailVerificationResponse, EmailResendRequest,
+    TwoFAResendRequest, SimpleResponse
 )
 from src.auth_service import (
     auth_service, get_current_user, get_current_admin_user, 
@@ -524,7 +526,26 @@ app = FastAPI(
 ALLOWED_ORIGINS = [
     "http://localhost:3000",     # React/Next.js dev
     "http://localhost:19006",    # Expo web dev
+    "http://127.0.0.1:19006",    # Expo web dev (127.0.0.1)
+    "http://127.0.0.1:3000",     # React/Next.js dev (127.0.0.1)
     "http://localhost:8081",     # Expo dev tunnel
+    # Portas alternativas de dev (Expo/Metro/Web dev)
+    "http://localhost:8082",
+    "http://127.0.0.1:8082",
+    "http://localhost:19000",
+    "http://127.0.0.1:19000",
+    "http://localhost:19001",
+    "http://127.0.0.1:19001",
+    "http://localhost:19002",
+    "http://127.0.0.1:19002",
+    "http://localhost:19003",
+    "http://127.0.0.1:19003",
+    "http://localhost:19004",
+    "http://127.0.0.1:19004",
+    "http://localhost:19005",
+    "http://127.0.0.1:19005",
+    "http://localhost:19006",
+    "http://127.0.0.1:19006",
     "http://192.168.1.100:19006", # Expo dev local network
     "http://192.168.1.101:19006", # Expo dev local network
     "http://192.168.1.102:19006", # Expo dev local network
@@ -541,6 +562,7 @@ ALLOWED_ORIGINS = [
 ]
 
 # Em desenvolvimento, permitir origens dinâmicas de Expo
+ALLOWED_ORIGIN_REGEX = None
 if os.getenv("ENVIRONMENT", "development") == "development":
     # Adicionar origem dinâmica baseada no IP do servidor
     server_ip = os.getenv("SERVER_HOST", "0.0.0.0")
@@ -549,10 +571,13 @@ if os.getenv("ENVIRONMENT", "development") == "development":
             f"http://{server_ip}:19006",
             f"exp://{server_ip}:19000"
         ])
+    # DEV: permitir qualquer origem http/https (apenas desenvolvimento)
+    ALLOWED_ORIGIN_REGEX = r"^https?://.*$"
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
+    allow_origin_regex=ALLOWED_ORIGIN_REGEX,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
@@ -1807,6 +1832,79 @@ async def register_device_with_2fa(
         logger.error(f"Erro no registro de dispositivo: {e}")
         raise HTTPException(status_code=500, detail="Erro interno do servidor")
 
+@app.post("/auth/verify-email", response_model=EmailVerificationResponse)
+async def verify_email(request: EmailVerificationRequest):
+    """
+    Verifica o código enviado por email após o registro e marca email_verified.
+    """
+    try:
+        # Buscar usuário
+        user = auth_db_manager.get_user_by_email(request.email)
+        if not user:
+            raise HTTPException(status_code=404, detail="Usuário não encontrado")
+
+        user_id = user["id"]
+        # Verificar código do tipo email_verification
+        valid = auth_db_manager.verify_2fa_code(user_id, request.code, "email_verification")
+        if not valid:
+            raise HTTPException(status_code=400, detail="Código de verificação inválido ou expirado")
+
+        # Marcar email como verificado
+        cursor = auth_db_manager.conn.cursor()
+        cursor.execute('UPDATE users SET email_verified = 1 WHERE id = ?', (user_id,))
+        auth_db_manager.conn.commit()
+
+        create_advanced_log("INFO", "auth_service", "verify_email",
+                            f"Email verificado para usuário {request.email}", {"user_id": user_id})
+
+        return EmailVerificationResponse(success=True, message="Email verificado com sucesso")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao verificar email: {e}")
+        raise HTTPException(status_code=500, detail="Erro interno do servidor")
+
+@app.post("/auth/verify-email/resend")
+async def resend_email_verification(request: EmailResendRequest):
+    try:
+        user = auth_db_manager.get_user_by_email(request.email)
+        if not user:
+            raise HTTPException(status_code=404, detail="Usuário não encontrado")
+        user_id = user["id"]
+        # gerar novo código
+        code = auth_db_manager.generate_2fa_code(user_id, "email_verification")
+        sent = auth_service.notification_service.send_2fa_email(request.email, code, user.get("full_name", "Usuário"))
+        if not sent:
+            raise HTTPException(status_code=500, detail="Falha ao enviar email")
+        return {"success": True, "message": "Código reenviado"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao reenviar verificação de email: {e}")
+        raise HTTPException(status_code=500, detail="Erro interno do servidor")
+
+@app.post("/auth/2fa/resend", response_model=SimpleResponse)
+async def resend_2fa_code(twofa_resend: TwoFAResendRequest, request: Request):
+    """Reenvia o código 2FA da etapa 1 do login usando o temp_token."""
+    try:
+        user_id = auth_db_manager.verify_temp_token(twofa_resend.temp_token, "temp_login")
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Token temporário inválido ou expirado")
+        # Gerar novo código e enviar por email
+        code = auth_db_manager.generate_2fa_code(user_id, "login")
+        user = auth_db_manager.get_user_by_id(user_id)
+        sent = False
+        if user and user.get("email"):
+            sent = auth_service.notification_service.send_2fa_email(user["email"], code, user.get("full_name", ""))
+        if not sent:
+            raise HTTPException(status_code=500, detail="Falha ao enviar código 2FA")
+        return SimpleResponse(success=True, message="Novo código 2FA enviado por email")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao reenviar 2FA: {e}")
+        raise HTTPException(status_code=500, detail="Erro interno do servidor")
+
 # ===== ENDPOINTS ORIGINAIS (MANTIDOS) =====
 
 # Modelos Pydantic para validação de dados
@@ -2428,7 +2526,7 @@ async def get_device(
 async def register_device(
     device: DeviceRegister, 
     db: DatabaseManager = Depends(get_db_manager),
-    current_user: Dict[str, Any] = Depends(get_current_device_operator)
+    current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     """
     Registra um novo dispositivo.
@@ -2492,11 +2590,11 @@ async def register_device(
 async def delete_device(
     device_id: int, 
     db: DatabaseManager = Depends(get_db_manager),
-    current_user: Dict[str, Any] = Depends(get_current_admin_user)
+    current_user: Dict[str, Any] = Depends(get_current_device_operator)
 ):
     """
     Remove um dispositivo.
-    REQUER AUTENTICAÇÃO DE ADMIN.
+    REQUER AUTENTICAÇÃO DE ADMIN OU OPERADOR DE DISPOSITIVO.
     
     Args:
         device_id (int): ID do dispositivo a ser removido
@@ -2586,7 +2684,7 @@ async def get_device_protection(
 async def toggle_device_protection(
     device_id: int, 
     db: DatabaseManager = Depends(get_db_manager),
-    current_user: Dict[str, Any] = Depends(get_current_admin_user)
+    current_user: Dict[str, Any] = Depends(get_current_device_operator)
 ):
     """
     Alterna o status de proteção de um dispositivo específico.
