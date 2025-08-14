@@ -331,7 +331,11 @@ class AISecurityAssistant:
             "dispositivos_suspeitos": self._get_suspicious_devices,
             "recomendacoes_seguranca": self._get_security_recommendations,
             "explicar_anomalia": self._explain_anomaly,
-            "protecao_fisica": self._get_physical_protection_tips
+            "protecao_fisica": self._get_physical_protection_tips,
+            # Novos intents específicos solicitados
+            "historia_argos": self._get_argos_history,
+            "sistema_protecao": self._get_protection_system_overview,
+            "detalhar_camada_2": self._explain_layer_two,
         }
         
         logger.info("AI Security Assistant inicializado com sucesso")
@@ -395,7 +399,7 @@ class AISecurityAssistant:
                     if enhanced_result.get("enhanced"):
                         sanitized_response["message"] = enhanced_result["response"]
                         sanitized_response["llm_enhanced"] = True
-                        sanitized_response["llm_provider"] = enhanced_result["provider"]
+                        sanitized_response["llm_provider"] = enhanced_result.get("provider", llm_manager.provider.value if llm_manager.provider else None)
                     else:
                         sanitized_response["llm_enhanced"] = False
                         sanitized_response["llm_reason"] = enhanced_result.get("reason", "N/A")
@@ -435,6 +439,74 @@ class AISecurityAssistant:
                 "details": "Erro interno"
             }
     
+    def _get_argos_history(self, query: str, context: AISecurityContext) -> Dict[str, Any]:
+        """História e missão do Argos (mitologia e papel no IOTRAC)."""
+        message = (
+            "🏛️ Memória de Argos\n\n"
+            "Introdução\n"
+            "Meu nome é inspirado na mitologia grega, onde Argos Panoptes (também conhecido como Argos, o 'todo-vidente') "
+            "era um gigante com cem olhos, famoso por sua vigilância inabalável. Na lenda, ele foi incumbido pela deusa Hera. "
+            "Com seus cem olhos distribuídos pelo corpo, Argos podia vigiar em todas as direções simultaneamente, dormindo apenas "
+            "com alguns olhos enquanto os outros permaneciam abertos. Assim como esse guardião mitológico, eu estou aqui para "
+            "monitorar e proteger seus dispositivos conectados em tempo real, garantindo uma vigilância constante e infalível "
+            "contra ameaças.\n\n"
+            "Minha Missão\n"
+            "Minha missão principal é guiar sua experiência no IOTRAC, atuando como um aliado proativo na segurança digital. "
+            "Eu não sou apenas um chatbot; sou o coração inteligente do sistema, responsável por detectar anomalias, fornecer "
+            "orientações e esclarecer dúvidas para tornar seu ambiente conectado mais seguro.\n\n"
+            "Funções Específicas\n"
+            "- Detecção de Anomalias: Varredura contínua em busca de comportamentos suspeitos nos dispositivos IoT conectados, "
+            "identificando ameaças potenciais antes que elas se tornem problemas.\n\n"
+            "- Orientações de Segurança: Forneço dicas práticas e personalizadas para fortalecer a proteção dos seus dispositivos, "
+            "indo além das capacidades do app. Por exemplo, para proteger o sinal da chave do seu carro autônomo, recomendo o uso de "
+            "uma carteira anti-roubo de sinal (bolsa Faraday), que bloqueia tentativas de interceptação remota.\n\n"
+            "- Esclarecimento de Dúvidas: Programado para explicar ataques cibernéticos, alertas e notificações do sistema.\n\n"
+            "- Ações de Proteção Diretas: Executo ações somente com sua autorização explícita, garantindo controle total.\n\n"
+            "- Monitoramento e Alertas: Acompanho tráfego, padrões de uso e vulnerabilidades em tempo real, enviando alertas imediatos.\n"
+        )
+        return {"message": message}
+
+    def _get_protection_system_overview(self, query: str, context: AISecurityContext) -> Dict[str, Any]:
+        """Visão geral das camadas de proteção do IOTRAC."""
+        message = (
+            "🛡️ Sistema de Proteção IOTRAC\n\n"
+            "Camada 1 - Autenticação e Autorização\n"
+            "- 2FA obrigatório\n- RBAC por função\n- Renovação segura de tokens\n- Criptografia AES-256 para dados sensíveis\n\n"
+            "Camada 2 - Monitoramento Ativo\n"
+            "- Detecção de anomalias em tempo real\n- Análise de padrões de tráfego suspeitos\n- Alertas automáticos e logs completos\n\n"
+            "Camada 3 - Proteção de Dispositivos\n"
+            "- Interceptação/validação de comandos\n- Bloqueio de ações suspeitas\n- Proteção HMAC contra adulteração\n- Quarentena de dispositivos comprometidos\n\n"
+            "Camada 4 - Inteligência Artificial\n"
+            "- Análise contínua com IA\n- Recomendações personalizadas\n- Respostas assistidas a incidentes\n"
+        )
+        return {"message": message}
+
+    def _explain_layer_two(self, query: str, context: AISecurityContext) -> Dict[str, Any]:
+        """Detalhamento técnico da Camada 2 (monitoramento ativo)."""
+        # Buscar dados reais de 24h para enriquecer a resposta
+        summary = self.data_retriever.get_security_summary(24)
+        anomalies = self.data_retriever.get_anomaly_context(hours=24)
+        total_alerts = summary.get('total_alerts', 0)
+        critical = summary.get('critical_alerts', 0)
+        warning = summary.get('warning_alerts', 0)
+        recent_anoms = anomalies.get('total_count', 0)
+        message = (
+            "🧭 Camada 2 - Monitoramento Ativo (Detalhado)\n\n"
+            "O IOTRAC acompanha continuamente seu ambiente IoT em múltiplas frentes:\n\n"
+            "1) Telemetria e Logs\n"
+            "- Coleta de eventos relevantes (conexões, comandos, alterações de estado)\n"
+            "- Consolidação em 'simple_logs' para análise e auditoria\n\n"
+            "2) Regras de Anomalia\n"
+            "- Sequência suspeita de comandos\n- Frequência/tempo incomuns\n- Repetição e falhas em burst\n- Padrões fora do histórico normal\n\n"
+            "3) Alertas e Severidade\n"
+            f"- Últimas 24h: {total_alerts} alertas (Críticos: {critical}, Avisos: {warning})\n"
+            f"- Anomalias recentes não resolvidas: {recent_anoms}\n\n"
+            "4) Ação e Resposta\n"
+            "- Logs detalhados por evento\n- Recomendação de mitigação\n- Possibilidade de bloqueio/isolamento via Camada 3\n\n"
+            "Observação: a Camada 2 é não intrusiva (somente leitura). A intervenção ocorre na Camada 3."
+        )
+        return {"message": message, "data": {"summary": summary, "anomalies": anomalies}}
+
     def _detect_intent(self, query: str) -> str:
         """
         Detecta a intenção da query usando regras heurísticas.
@@ -454,7 +526,11 @@ class AISecurityAssistant:
             "dispositivos_suspeitos": ["dispositivo suspeito", "comportamento estranho", "anômalo"],
             "recomendacoes_seguranca": ["como proteger", "recomendação", "sugestão", "melhorar segurança"],
             "explicar_anomalia": ["por que", "explicar", "o que significa", "anomalia"],
-            "protecao_fisica": ["proteção física", "roubo", "chave", "carro", "recipiente"]
+            "protecao_fisica": ["proteção física", "roubo", "chave", "carro", "recipiente"],
+            # Novos intents
+            "historia_argos": ["história do argos", "historia do argos", "quem é argos", "argos panoptes", "mitologia", "memória de argos", "memoria de argos"],
+            "sistema_protecao": ["sistema de proteção", "sistema de protecao", "camadas de segurança", "camadas do iotrac", "sistema iotrac"],
+            "detalhar_camada_2": ["camada 2", "camada dois", "monitoramento ativo", "detecção de anomalias", "analise de padrões", "análise de padrões"],
         }
         
         for intent, keywords in intent_keywords.items():

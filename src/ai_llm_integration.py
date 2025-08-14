@@ -184,12 +184,19 @@ class LLMIntegrationManager:
                 payload = {"inputs": "Hello"}
                 
             elif provider == LLMProvider.TOGETHER:
-                url = "https://api.together.xyz/inference"
-                headers = {"Authorization": f"Bearer {api_token}"}
+                url = "https://api.together.xyz/v1/chat/completions"
+                headers = {
+                    "Authorization": f"Bearer {api_token}",
+                    "Content-Type": "application/json"
+                }
                 payload = {
-                    "model": "togethercomputer/RedPajama-INCITE-Chat-3B-v1",
-                    "prompt": "Hello",
-                    "max_tokens": 10
+                    "model": os.getenv("LLM_MODEL", "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free"),
+                    "messages": [
+                        {"role": "system", "content": "Você é um assistente de cibersegurança do IOTRAC."},
+                        {"role": "user", "content": "Diga apenas OK"}
+                    ],
+                    "max_tokens": 10,
+                    "temperature": 0.1
                 }
                 
             elif provider == LLMProvider.CUSTOM:
@@ -351,23 +358,34 @@ Resposta melhorada (máximo 300 palavras):
             return {"success": False, "error": f"HTTP {response.status_code}"}
     
     def _call_together(self, prompt: str) -> Dict[str, Any]:
-        """Chama API do Together AI."""
-        url = "https://api.together.xyz/inference"
-        headers = {"Authorization": f"Bearer {self.api_token}"}
+        """Chama API do Together AI (chat completions)."""
+        url = "https://api.together.xyz/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self.api_token}",
+            "Content-Type": "application/json"
+        }
         payload = {
-            "model": "togethercomputer/RedPajama-INCITE-Chat-3B-v1",
-            "prompt": prompt,
+            "model": os.getenv("LLM_MODEL", "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free"),
+            "messages": [
+                {"role": "system", "content": "Você é um assistente de cibersegurança do IOTRAC."},
+                {"role": "user", "content": prompt}
+            ],
             "max_tokens": 300,
-            "temperature": 0.7
+            "temperature": 0.6
         }
         
-        response = requests.post(url, headers=headers, json=payload, timeout=15)
+        response = requests.post(url, headers=headers, json=payload, timeout=30)
         
         if response.status_code == 200:
             result = response.json()
-            return {"success": True, "response": result.get("output", {}).get("choices", [{}])[0].get("text", "")}
+            content = ""
+            try:
+                content = result["choices"][0]["message"]["content"]
+            except Exception:
+                content = result.get("choices", [{}])[0].get("text", "")
+            return {"success": True, "response": content}
         else:
-            return {"success": False, "error": f"HTTP {response.status_code}"}
+            return {"success": False, "error": f"HTTP {response.status_code}: {response.text[:120]}"}
     
     def _call_custom(self, prompt: str) -> Dict[str, Any]:
         """Chama endpoint customizado."""

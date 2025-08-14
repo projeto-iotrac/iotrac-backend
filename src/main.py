@@ -596,6 +596,29 @@ except Exception as e:
     logger.error(f"Erro ao inicializar componentes de segurança: {e}")
     aes_cipher = None
 
+# Auto-configuração do LLM no startup (se variáveis estiverem presentes)
+@app.on_event("startup")
+async def configure_llm_on_startup() -> None:
+    try:
+        api_key = os.getenv("LLM_API_KEY")
+        provider_name = os.getenv("LLM_PROVIDER")
+        custom_endpoint = os.getenv("LLM_CUSTOM_ENDPOINT")
+        if api_key and provider_name:
+            try:
+                provider = LLMProvider(provider_name.lower())
+            except ValueError:
+                logger.warning(f"LLM_PROVIDER inválido: {provider_name}")
+                return
+            result = llm_manager.configure_llm(provider=provider, api_token=api_key, custom_endpoint=custom_endpoint)
+            if result.get("success"):
+                logger.info(f"LLM auto-configurado no startup: {result.get('provider')}")
+            else:
+                logger.warning(f"Falha na auto-configuração do LLM: {result.get('error')}")
+        else:
+            logger.info("LLM não configurado por ambiente (LLM_API_KEY/LLM_PROVIDER ausentes)")
+    except Exception as e:
+        logger.warning(f"Erro na auto-configuração do LLM no startup: {e}")
+
 # ===== ENDPOINTS DE LOGS SIMPLES =====
 
 @app.get("/logs/simple", response_model=SimpleLogsResponse)
@@ -3431,7 +3454,7 @@ async def ai_query(
     try:
         # Rate limiting específico para IA (mais restritivo)
         client_ip = http_request.client.host
-        if not check_rate_limit(client_ip, "ai_query", max_requests=5, window_minutes=15):
+        if not check_rate_limit(client_ip, "ai_query", max_attempts=20, window_minutes=1):
             raise HTTPException(
                 status_code=429,
                 detail="Muitas consultas à IA. Tente novamente em 15 minutos."
@@ -3452,9 +3475,9 @@ async def ai_query(
         
         # Log de segurança
         create_simple_log(
-            "info" if result["success"] else "warning",
-            "🤖 Consulta IA",
-            f"Usuário {current_user['email']} fez consulta à IA: {result.get('intent', 'unknown')}"
+            "ai_query",
+            {"event": "Consulta IA", "intent": result.get("intent", "unknown"), "email": current_user.get("email")},
+            user_id=current_user.get("id")
         )
         
         return AIResponse(**result)
@@ -3463,7 +3486,11 @@ async def ai_query(
         raise
     except Exception as e:
         logger.error(f"Erro no endpoint de IA: {e}")
-        create_simple_log("critical", "🚨 Erro IA", f"Erro crítico no sistema de IA: {str(e)}")
+        create_simple_log(
+            "ai_error",
+            {"event": "Erro IA", "error": str(e)},
+            user_id=current_user.get("id")
+        )
         raise HTTPException(status_code=500, detail="Erro interno do assistente de IA")
 
 @app.get("/ai/summary", response_model=AISummaryResponse)
