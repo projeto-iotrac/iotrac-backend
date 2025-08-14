@@ -90,6 +90,41 @@ class RegisterResponse(BaseModel):
     user_id: Optional[int] = None
     requires_verification: bool = True
 
+class EmailVerificationRequest(BaseModel):
+    """Modelo para verificação de email após registro."""
+    email: str = Field(..., description="Email do usuário")
+    code: str = Field(..., min_length=6, max_length=6, description="Código de verificação enviado por email")
+
+    @validator('email')
+    @staticmethod
+    def validate_email(v):
+        if '@' not in v or '.' not in v:
+            raise ValueError("Email inválido")
+        return v.lower()
+
+    @validator('code')
+    @staticmethod
+    def validate_code(v):
+        if not v.isdigit():
+            raise ValueError("Código deve conter apenas números")
+        return v
+
+class EmailVerificationResponse(BaseModel):
+    """Resposta da verificação de email."""
+    success: bool
+    message: str
+
+class EmailResendRequest(BaseModel):
+    """Requisição para reenviar código de verificação de email."""
+    email: str = Field(..., description="Email do usuário")
+
+    @validator('email')
+    @staticmethod
+    def validate_email(v):
+        if '@' not in v or '.' not in v:
+            raise ValueError("Email inválido")
+        return v.lower()
+
 class UserInfo(BaseModel):
     """Modelo para informações do usuário."""
     id: int
@@ -139,6 +174,15 @@ class TOTPVerifyResponse(BaseModel):
     access_token: Optional[str] = None
     refresh_token: Optional[str] = None
     expires_in: int = 900  # 15 minutos
+
+class TwoFAResendRequest(BaseModel):
+    """Reenvio do código 2FA da etapa de login."""
+    temp_token: str = Field(..., description="Token temporário da etapa 1 do login")
+
+class SimpleResponse(BaseModel):
+    """Resposta simples de sucesso/mensagem."""
+    success: bool
+    message: str
 
 class RefreshTokenRequest(BaseModel):
     """Modelo para renovação de token."""

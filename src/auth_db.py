@@ -55,6 +55,9 @@ class AuthDatabaseManager(DatabaseManager):
                 )
             ''')
             
+            # Garantir colunas obrigatórias (migração leve)
+            self._migrate_users_table()
+            
             # Tabela de códigos 2FA temporários
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS two_fa_codes (
@@ -126,6 +129,28 @@ class AuthDatabaseManager(DatabaseManager):
             
         except sqlite3.Error as e:
             logger.error(f"Erro ao inicializar tabelas de autenticação: {e}")
+            raise
+    
+    def _migrate_users_table(self) -> None:
+        """Garante que a tabela users possua todas as colunas necessárias."""
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("PRAGMA table_info(users)")
+            cols = {row[1] for row in cursor.fetchall()}
+            # Colunas necessárias para TOTP
+            if 'two_fa_secret' not in cols:
+                cursor.execute("ALTER TABLE users ADD COLUMN two_fa_secret TEXT")
+                logger.info("Coluna 'two_fa_secret' adicionada em users")
+            if 'two_fa_backup_codes' not in cols:
+                cursor.execute("ALTER TABLE users ADD COLUMN two_fa_backup_codes TEXT")
+                logger.info("Coluna 'two_fa_backup_codes' adicionada em users")
+            # Garantir coluna two_fa_enabled (caso bancos antigos)
+            if 'two_fa_enabled' not in cols:
+                cursor.execute("ALTER TABLE users ADD COLUMN two_fa_enabled BOOLEAN DEFAULT 1")
+                logger.info("Coluna 'two_fa_enabled' adicionada em users")
+            self.conn.commit()
+        except sqlite3.Error as e:
+            logger.error(f"Erro ao migrar tabela users: {e}")
             raise
     
     # ===== MÉTODOS DE USUÁRIO =====
@@ -224,7 +249,8 @@ class AuthDatabaseManager(DatabaseManager):
             cursor = self.conn.cursor()
             cursor.execute('''
                 SELECT id, email, full_name, phone, role, is_active, 
-                       two_fa_enabled, created_at, last_login, email_verified, phone_verified
+                       two_fa_enabled, two_fa_secret, two_fa_backup_codes,
+                       created_at, last_login, email_verified, phone_verified
                 FROM users WHERE id = ?
             ''', (user_id,))
             
@@ -238,10 +264,12 @@ class AuthDatabaseManager(DatabaseManager):
                     "role": row[4],
                     "is_active": bool(row[5]),
                     "two_fa_enabled": bool(row[6]),
-                    "created_at": row[7],
-                    "last_login": row[8],
-                    "email_verified": bool(row[9]),
-                    "phone_verified": bool(row[10])
+                    "two_fa_secret": row[7],
+                    "two_fa_backup_codes": row[8],
+                    "created_at": row[9],
+                    "last_login": row[10],
+                    "email_verified": bool(row[11]),
+                    "phone_verified": bool(row[12])
                 }
             return None
             
@@ -359,7 +387,8 @@ class AuthDatabaseManager(DatabaseManager):
         try:
             # Gerar código de 6 dígitos
             code = str(secrets.randbelow(1000000)).zfill(6)
-            expires_at = datetime.now() + timedelta(minutes=10)  # Expira em 10 minutos
+            # Usar UTC para alinhar com CURRENT_TIMESTAMP do SQLite
+            expires_at = datetime.utcnow() + timedelta(minutes=10)
             
             cursor = self.conn.cursor()
             cursor.execute('''
@@ -428,7 +457,8 @@ class AuthDatabaseManager(DatabaseManager):
         """
         try:
             token = secrets.token_urlsafe(32)
-            expires_at = datetime.now() + timedelta(minutes=expires_minutes)
+            # Usar UTC para alinhar com CURRENT_TIMESTAMP do SQLite
+            expires_at = datetime.utcnow() + timedelta(minutes=expires_minutes)
             
             cursor = self.conn.cursor()
             cursor.execute('''
