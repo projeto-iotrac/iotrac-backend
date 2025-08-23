@@ -26,16 +26,24 @@ print_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+# Resolver Python (python3 ou python)
+resolve_python() {
+    if command -v python3 >/dev/null 2>&1; then
+        PYTHON_BIN=$(command -v python3)
+    elif command -v python >/dev/null 2>&1; then
+        PYTHON_BIN=$(command -v python)
+    else
+        print_error "❌ Python não encontrado! Instale Python3 ou Python."
+        exit 1
+    fi
+}
+
 # Função para gerar chaves
 generate_keys() {
     print_status "🔑 Gerando chaves de segurança para IOTRAC..."
     
     # Verificar se Python está disponível
-    if ! command -v python3 &> /dev/null; then
-        print_error "❌ Python3 não encontrado!"
-        print_status "Por favor, instale Python3 primeiro"
-        exit 1
-    fi
+    resolve_python
     
     # Verificar se env.example existe
     if [ ! -f "../config/env.example" ]; then
@@ -45,14 +53,14 @@ generate_keys() {
     
     # Gerar chaves usando Python
     print_status "🔐 Gerando AES_KEY..."
-    local aes_key=$(python3 -c "import os, base64; print(base64.b64encode(os.urandom(32)).decode())")
+    local aes_key=$("$PYTHON_BIN" -c "import os, base64; print(base64.b64encode(os.urandom(32)).decode())")
     if [ $? -ne 0 ]; then
         print_error "❌ Erro ao gerar AES_KEY!"
         exit 1
     fi
     
     print_status "🔐 Gerando HMAC_KEY..."
-    local hmac_key=$(python3 -c "import os, base64; print(base64.b64encode(os.urandom(32)).decode())")
+    local hmac_key=$("$PYTHON_BIN" -c "import os, base64; print(base64.b64encode(os.urandom(32)).decode())")
     if [ $? -ne 0 ]; then
         print_error "❌ Erro ao gerar HMAC_KEY!"
         exit 1
