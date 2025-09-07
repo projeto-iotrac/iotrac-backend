@@ -2613,7 +2613,7 @@ async def register_device(
 async def delete_device(
     device_id: int, 
     db: DatabaseManager = Depends(get_db_manager),
-    current_user: Dict[str, Any] = Depends(get_current_device_operator)
+    current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     """
     Remove um dispositivo.
