@@ -47,14 +47,15 @@ class ServerManager:
                 logger.error("   Execute: python -m venv venv")
                 return False
             
-            # Comando para iniciar o servidor
+            # Comando para iniciar o servidor com HTTPS
             cmd = [
                 "../venv/bin/python", "-m", "uvicorn",
                 "src.main:app",
                 "--host", "0.0.0.0",
-                "--port", "8000",
+                "--port", "8443",
                 "--log-level", "info",
-                "--reload"
+                "--ssl-keyfile", "key.pem",
+                "--ssl-certfile", "cert.pem"
             ]
             
             logger.info(f"📡 Comando: {' '.join(cmd)}")

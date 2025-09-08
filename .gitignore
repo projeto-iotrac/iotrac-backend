@@ -69,3 +69,8 @@ coverage.xml
 *.temp
 *.bak
 *.backup 
+
+#certificado https
+.env
+cert.pem
+key.pem
